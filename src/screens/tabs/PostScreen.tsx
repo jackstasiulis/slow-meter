@@ -36,7 +36,7 @@ export default function PostScreen() {
   const [images, setImages] = useState<string[]>([]);
   // Original dimensions kept so we can compute crop bounds
   const [imageDims, setImageDims] = useState<{ width: number; height: number }[]>([]);
-  const [cropRatio, setCropRatio] = useState<'4:3' | '1:1'>('4:3');
+  const [cropRatio, setCropRatio] = useState<'4:3' | '4:3L' | '1:1'>('4:3');
   const [selectedThumb, setSelectedThumb] = useState<number | null>(null);
   const [carouselIndex, setCarouselIndex] = useState(0);
   const [caption, setCaption] = useState('');
@@ -55,7 +55,7 @@ export default function PostScreen() {
   const cropScaleR  = useRef(1);
   const cropPanXR   = useRef(0);
   const cropPanYR   = useRef(0);
-  const cropRatioR  = useRef<'4:3' | '1:1'>('4:3');
+  const cropRatioR  = useRef<'4:3' | '4:3L' | '1:1'>('4:3');
   // Per-photo crop keyed by asset URI (stable when reordering), not by list index
   const cropStatesR = useRef<Record<string, CropState>>({});
   const [cropStates, setCropStates] = useState<Record<string, CropState>>({});
@@ -78,7 +78,7 @@ export default function PostScreen() {
 
   function cDims() {
     const cW = SCREEN_WIDTH - 40;
-    const cH = cropRatioR.current === '1:1' ? cW : cW * 4 / 3;
+    const cH = cropRatioR.current === '1:1' ? cW : cropRatioR.current === '4:3L' ? cW * 3 / 4 : cW * 4 / 3;
     return { cW, cH };
   }
 
@@ -345,7 +345,7 @@ export default function PostScreen() {
   ): Promise<string> {
     const pr = PixelRatio.get();
     const cW_dp = SCREEN_WIDTH - 40;
-    const cH_dp = cropRatioR.current === '1:1' ? cW_dp : cW_dp * 4 / 3;
+    const cH_dp = cropRatioR.current === '1:1' ? cW_dp : cropRatioR.current === '4:3L' ? cW_dp * 3 / 4 : cW_dp * 4 / 3;
     // Frame and pan in **layout pixels** (same space as bitmap vs view in RN Image)
     const cW = cW_dp * pr;
     const cH = cH_dp * pr;
@@ -591,14 +591,14 @@ export default function PostScreen() {
             <View style={styles.ratioRow}>
               <Text style={styles.ratioLabel}>Crop</Text>
               <View style={styles.ratioToggle}>
-                {(['4:3', '1:1'] as const).map((r) => (
+                {(['4:3', '4:3L', '1:1'] as const).map((r) => (
                   <TouchableOpacity
                     key={r}
                     style={[styles.ratioBtn, cropRatio === r && styles.ratioBtnActive]}
                     onPress={() => setCropRatio(r)}
                   >
                     <Text style={[styles.ratioBtnText, cropRatio === r && styles.ratioBtnTextActive]}>
-                      {r === '4:3' ? '4:3' : '1:1'}
+                      {r === '4:3' ? '3:4' : r === '4:3L' ? '4:3' : '1:1'}
                     </Text>
                   </TouchableOpacity>
                 ))}
@@ -610,7 +610,7 @@ export default function PostScreen() {
             <View style={styles.cropWrapper}>
               {/* PanResponder frame */}
               <View
-                style={[styles.carouselContainer, cropRatio === '1:1' ? styles.carouselSquare : styles.carouselPortrait]}
+                style={[styles.carouselContainer, cropRatio === '1:1' ? styles.carouselSquare : cropRatio === '4:3L' ? styles.carouselLandscape : styles.carouselPortrait]}
                 {...cropPanResponder.panHandlers}
               >
                 {images.length === 1 ? (
@@ -631,7 +631,7 @@ export default function PostScreen() {
                     }
                   >
                     {images.map((uri, i) => {
-                      const slide = cropRatio === '1:1' ? styles.carouselSquare : styles.carouselPortrait;
+                      const slide = cropRatio === '1:1' ? styles.carouselSquare : cropRatio === '4:3L' ? styles.carouselLandscape : styles.carouselPortrait;
                       const cs = cropStates[uri] ?? { scale: 1, panX: 0, panY: 0 };
                       return (
                         <View key={i} style={[slide, { overflow: 'hidden' }]}>
@@ -915,6 +915,7 @@ const styles = StyleSheet.create({
   cropBtnCell: { flex: 1, borderRadius: 1, backgroundColor: 'rgba(255,255,255,0.85)' },
   carouselContainer: { width: '100%', borderRadius: 12, overflow: 'hidden', marginBottom: 8, position: 'relative' },
   carouselPortrait: { width: SCREEN_WIDTH - 40, aspectRatio: 3 / 4 },
+  carouselLandscape: { width: SCREEN_WIDTH - 40, aspectRatio: 4 / 3 },
   carouselSquare: { width: SCREEN_WIDTH - 40, aspectRatio: 1 },
   carouselImage: { width: SCREEN_WIDTH - 40 },
   carouselDots: { position: 'absolute', bottom: 8, left: 0, right: 0, flexDirection: 'row', justifyContent: 'center', gap: 5 },

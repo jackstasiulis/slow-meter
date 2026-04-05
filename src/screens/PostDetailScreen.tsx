@@ -63,6 +63,17 @@ export default function PostDetailScreen() {
   const images = post.media_urls && post.media_urls.length > 0 ? post.media_urls : [post.media_url];
   const hasMultiple = images.length > 1;
 
+  // Detect cover image aspect ratio so the container matches the photo exactly (no cropping)
+  const [imageAspectRatio, setImageAspectRatio] = useState<number>(1);
+  useEffect(() => {
+    if (!images[0]) return;
+    Image.getSize(
+      images[0],
+      (w, h) => { if (w > 0 && h > 0) setImageAspectRatio(w / h); },
+      () => { /* keep default */ },
+    );
+  }, [images[0]]);
+
   // Pinch-to-zoom (same pattern as PostCard)
   const [isZooming, setIsZooming] = useState(false);
   const [scrollEnabled, setScrollEnabled] = useState(true);
@@ -343,7 +354,7 @@ export default function PostDetailScreen() {
         {/* Image(s) */}
         <Animated.View
           ref={imageWrapNodeRef}
-          style={styles.imageWrap}
+          style={[styles.imageWrap, { height: SCREEN_WIDTH / imageAspectRatio }]}
           {...pinchResponder.panHandlers}
           onLayout={() => {
             imageWrapNodeRef.current?.measure(
@@ -363,13 +374,13 @@ export default function PostDetailScreen() {
             >
               {images.map((url: string, i: number) => (
                 <TouchableOpacity key={i} activeOpacity={1} onPress={handleImageTap}>
-                  <Image source={{ uri: url }} style={styles.image} resizeMode="cover" />
+                  <Image source={{ uri: url }} style={[styles.image, { height: SCREEN_WIDTH / imageAspectRatio }]} resizeMode="cover" />
                 </TouchableOpacity>
               ))}
             </ScrollView>
           ) : (
             <TouchableOpacity activeOpacity={1} onPress={handleImageTap}>
-              <Image source={{ uri: images[0] }} style={styles.image} resizeMode="cover" />
+              <Image source={{ uri: images[0] }} style={[styles.image, { height: SCREEN_WIDTH / imageAspectRatio }]} resizeMode="cover" />
             </TouchableOpacity>
           )}
         </Animated.View>
@@ -589,8 +600,8 @@ const styles = StyleSheet.create({
   time: { fontSize: 12, color: '#aaa' },
   menuBtn: { padding: 4 },
   menuBtnText: { fontSize: 16, color: '#1a1a1a', letterSpacing: 1 },
-  image: { width: SCREEN_WIDTH, height: SCREEN_WIDTH },
-  imageWrap: { width: SCREEN_WIDTH, height: SCREEN_WIDTH, overflow: 'hidden' },
+  image: { width: SCREEN_WIDTH },
+  imageWrap: { width: SCREEN_WIDTH, overflow: 'hidden' },
   zoomImageWrap: { position: 'absolute' },
   dots: { flexDirection: 'row', justifyContent: 'center', gap: 4, paddingVertical: 6 },
   dot: { width: 6, height: 6, borderRadius: 3, backgroundColor: '#ddd' },
