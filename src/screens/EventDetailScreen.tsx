@@ -13,6 +13,7 @@ import {
 } from 'react-native';
 import { useRoute, useNavigation } from '@react-navigation/native';
 import { supabase } from '../lib/supabase';
+import { fetchNominatimSearch } from '../lib/nominatim';
 
 type EventDetail = {
   id: string;
@@ -112,12 +113,8 @@ export default function EventDetailScreen() {
       // Geocode the location to get coords for a static map
       if (!ev.image_url && ev.location) {
         try {
-          const res = await fetch(
-            `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(ev.location)}&limit=1`,
-            { headers: { 'User-Agent': 'SlowMeterApp/1.0' } }
-          );
-          const data = await res.json();
-          if (data?.[0]) {
+          const data = await fetchNominatimSearch({ q: ev.location, limit: 1, addressdetails: false });
+          if (data[0]) {
             const { lat, lon } = data[0];
             setLocationImageUrl(`https://staticmap.openstreetmap.de/staticmap.php?center=${lat},${lon}&zoom=15&size=800x400&markers=${lat},${lon},red-pushpin`);
           }

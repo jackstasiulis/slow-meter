@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
+import React, { useState, useEffect, useLayoutEffect, useRef, useCallback, useMemo } from 'react';
 import {
   View,
   Text,
@@ -25,6 +25,11 @@ import * as FileSystem from 'expo-file-system/legacy';
 import { decode } from 'base64-arraybuffer';
 import { supabase } from '../../lib/supabase';
 import {
+  formatNominatimSuggestionLabel,
+  fetchNominatimSearch,
+  normalizeNominatimSearchQuery,
+} from '../../lib/nominatim';
+import {
   buildAvailabilityForPreset,
   buildCustomAvailability,
   CUSTOM_AVAILABILITY_MAX_DETAILED_DAYS,
@@ -48,6 +53,19 @@ const QUICK_PLAN_DETAILS_MAX_LEN = 120;
 const CHAT_INITIAL_MESSAGE_LIMIT = 350;
 
 type Sender = { id: string; username: string; avatar_url: string | null };
+
+async function loadGroupMemberProfiles(conversationId: string): Promise<Sender[]> {
+  const { data: rows } = await supabase
+    .from('conversation_participants')
+    .select('user_id')
+    .eq('conversation_id', conversationId);
+  const ids = [...new Set((rows ?? []).map((r: { user_id: string }) => r.user_id))];
+  if (ids.length === 0) return [];
+  const { data: userRows } = await supabase.from('users').select('id, username, avatar_url').in('id', ids);
+  const list = [...(userRows ?? [])] as Sender[];
+  list.sort((a, b) => a.username.localeCompare(b.username, undefined, { sensitivity: 'base' }));
+  return list;
+}
 
 type SharedEvent = {
   id: string;
@@ -125,9 +143,51 @@ export default function ConversationScreen() {
 
   // Group creator (for delete access control)
   const [groupCreatedBy, setGroupCreatedBy] = useState<string | null>(null);
+  const [groupMembersList, setGroupMembersList] = useState<Sender[]>([]);
+
+  // Merge group avatar + member count into the navigation header so the in-view banner is not needed
+  useLayoutEffect(() => {
+    if (!isGroup) return;
+    navigation.setOptions({
+      headerTitle: () => (
+        <TouchableOpacity
+          style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}
+          onPress={() => { setEditGroupName(groupName); setNewGroupAvatarUri(null); setShowGroupSettings(true); }}
+          activeOpacity={0.7}
+        >
+          <View style={styles.groupHeaderAvatar}>
+            {groupAvatarUrl ? (
+              <Image source={{ uri: groupAvatarUrl }} style={styles.groupHeaderAvatarImg} />
+            ) : (
+              <Text style={styles.groupHeaderAvatarIcon}>👥</Text>
+            )}
+          </View>
+          <View>
+            <Text style={styles.groupHeaderName}>{groupName}</Text>
+            {memberCount !== null && (
+              <Text style={styles.groupMemberCount}>{memberCount} members</Text>
+            )}
+          </View>
+        </TouchableOpacity>
+      ),
+      headerRight: () => (
+        <TouchableOpacity
+          onPress={() => { setEditGroupName(groupName); setNewGroupAvatarUri(null); setShowGroupSettings(true); }}
+          hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+          style={{ marginRight: 4 }}
+        >
+          <Text style={{ fontSize: 12, color: '#888' }}>Edit</Text>
+        </TouchableOpacity>
+      ),
+    });
+  }, [isGroup, groupName, groupAvatarUrl, memberCount]);
 
   // Pinned events (up to 3)
   const [pinnedEvents, setPinnedEvents] = useState<SharedEvent[]>([]);
+
+  // Pinned quick plan (at most 1)
+  const [pinnedPlan, setPinnedPlan] = useState<GroupPlan | null>(null);
+  const [pinnedPlanId, setPinnedPlanId] = useState<string | null>(null);
 
   // Polls
   const [showCreatePoll, setShowCreatePoll] = useState(false);
@@ -215,6 +275,15 @@ export default function ConversationScreen() {
     const onHide = Keyboard.addListener(hideEvent, () => setKeyboardHeight(0));
     return () => { onShow.remove(); onHide.remove(); };
   }, []);
+
+  useEffect(() => {
+    if (!showGroupSettings || !isGroup) return;
+    let cancelled = false;
+    loadGroupMemberProfiles(conversationId).then((list) => {
+      if (!cancelled) setGroupMembersList(list);
+    });
+    return () => { cancelled = true; };
+  }, [showGroupSettings, isGroup, conversationId]);
 
   function emptyGroupPlanRsvpBuckets(): GroupPlanRsvpBuckets {
     return { yes: [], no: [], maybe: [] };
@@ -429,6 +498,7 @@ export default function ConversationScreen() {
     let availabilityVoteChannel: any;
     let availabilityCheckChannel: any;
     let groupPlanRsvpChannel: any;
+    let conversationPinChannel: any;
 
     async function setup() {
       const messagesSelect =
@@ -442,7 +512,7 @@ export default function ConversationScreen() {
               .eq('conversation_id', conversationId),
             supabase
               .from('conversations')
-              .select('pinned_event_ids, created_by')
+              .select('pinned_event_ids, pinned_plan_id, created_by')
               .eq('id', conversationId)
               .single(),
           ])
@@ -475,12 +545,19 @@ export default function ConversationScreen() {
       if (meRow) myUsernameRef.current = meRow.username;
 
       let pinnedIdsForLoad: string[] = [];
-      if (groupHeadPack) {
+      let pinnedPlanIdForLoad: string | null = null;
+      if (!isGroup) {
+        setGroupMembersList([]);
+      } else if (groupHeadPack) {
         const [participantsRes, convRes] = groupHeadPack as [{ count: number | null }, { data: any }];
         setMemberCount(participantsRes?.count ?? null);
         const convData = convRes?.data;
         setGroupCreatedBy(convData?.created_by ?? null);
         pinnedIdsForLoad = convData?.pinned_event_ids ?? [];
+        pinnedPlanIdForLoad = convData?.pinned_plan_id ?? null;
+        setPinnedPlanId(pinnedPlanIdForLoad);
+        const memberProfiles = await loadGroupMemberProfiles(conversationId);
+        setGroupMembersList(memberProfiles);
       }
 
       const dmRow = (dmProfileRes as { data?: { id: string; username: string; avatar_url: string | null } | null })?.data;
@@ -609,6 +686,17 @@ export default function ConversationScreen() {
 
         if (isGroup) {
           setPinnedEvents((pinnedEventsData ?? []).map((e: any) => ({ ...e, creator: Array.isArray(e.creator) ? e.creator[0] ?? null : e.creator })));
+          if (pinnedPlanIdForLoad) {
+            const { data: pp } = await supabase
+              .from('group_plans')
+              .select('id, conversation_id, created_by, title, location, details, created_at')
+              .eq('id', pinnedPlanIdForLoad)
+              .single();
+            if (pp) {
+              setPinnedPlan(pp as GroupPlan);
+              await loadGroupPlansMap([pp.id]);
+            }
+          }
         }
 
         const postMap: Record<string, any> = {};
@@ -846,6 +934,28 @@ export default function ConversationScreen() {
           }));
         })
         .subscribe();
+
+      if (isGroup) {
+        conversationPinChannel = supabase
+          .channel(`conv-pin:${conversationId}`)
+          .on('postgres_changes', {
+            event: 'UPDATE',
+            schema: 'public',
+            table: 'conversations',
+            filter: `id=eq.${conversationId}`,
+          }, async (payload: any) => {
+            const newId: string | null = payload.new?.pinned_plan_id ?? null;
+            setPinnedPlanId(newId);
+            if (!newId) { setPinnedPlan(null); return; }
+            const { data: pp } = await supabase
+              .from('group_plans')
+              .select('id, conversation_id, created_by, title, location, details, created_at')
+              .eq('id', newId)
+              .single();
+            if (pp) { setPinnedPlan(pp as GroupPlan); await loadGroupPlansMap([pp.id]); }
+          })
+          .subscribe();
+      }
     }
 
     setup();
@@ -854,6 +964,7 @@ export default function ConversationScreen() {
       if (availabilityVoteChannel) supabase.removeChannel(availabilityVoteChannel);
       if (availabilityCheckChannel) supabase.removeChannel(availabilityCheckChannel);
       if (groupPlanRsvpChannel) supabase.removeChannel(groupPlanRsvpChannel);
+      if (conversationPinChannel) supabase.removeChannel(conversationPinChannel);
     };
   }, []);
 
@@ -898,20 +1009,32 @@ export default function ConversationScreen() {
     if (!isGroup) return;
     supabase
       .from('conversations')
-      .select('pinned_event_ids')
+      .select('pinned_event_ids, pinned_plan_id')
       .eq('id', conversationId)
       .single()
-      .then(({ data: convData }) => {
+      .then(async ({ data: convData }) => {
         const ids: string[] = convData?.pinned_event_ids ?? [];
-        if (ids.length === 0) { setPinnedEvents([]); return; }
-        supabase
-          .from('events')
-          .select('id, title, date, time, location, description, image_url, creator:users!events_created_by_fkey(username, avatar_url)')
-          .in('id', ids)
-          .then(({ data: peData }) => {
-            if (peData) setPinnedEvents(peData.map((e: any) => ({ ...e, creator: Array.isArray(e.creator) ? e.creator[0] ?? null : e.creator })));
-            else setPinnedEvents([]);
-          });
+        if (ids.length === 0) { setPinnedEvents([]); }
+        else {
+          supabase
+            .from('events')
+            .select('id, title, date, time, location, description, image_url, creator:users!events_created_by_fkey(username, avatar_url)')
+            .in('id', ids)
+            .then(({ data: peData }) => {
+              if (peData) setPinnedEvents(peData.map((e: any) => ({ ...e, creator: Array.isArray(e.creator) ? e.creator[0] ?? null : e.creator })));
+              else setPinnedEvents([]);
+            });
+        }
+        const ppId: string | null = convData?.pinned_plan_id ?? null;
+        setPinnedPlanId(ppId);
+        if (!ppId) { setPinnedPlan(null); return; }
+        const { data: pp } = await supabase
+          .from('group_plans')
+          .select('id, conversation_id, created_by, title, location, details, created_at')
+          .eq('id', ppId)
+          .single();
+        if (pp) { setPinnedPlan(pp as GroupPlan); await loadGroupPlansMap([pp.id]); }
+        else setPinnedPlan(null);
       });
   }, [conversationId, isGroup]));
 
@@ -954,33 +1077,19 @@ export default function ConversationScreen() {
     return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
   }
 
-  function formatNominatimAddress(r: any): string {
-    const addr = r.address ?? {};
-    const parts: string[] = [];
-    const street = [addr.house_number, addr.road].filter(Boolean).join(' ');
-    if (street) parts.push(street);
-    const city = addr.city ?? addr.town ?? addr.village ?? addr.municipality;
-    if (city) parts.push(city);
-    if (addr.postcode) parts.push(addr.postcode);
-    if (addr.country) parts.push(addr.country);
-    return parts.join(', ') || r.display_name;
-  }
-
   function debouncedLocationSearch(q: string) {
     setLocationQuery(q);
     setEventLocation('');
     setLocationSuggestions([]);
     if (locationSearchTimeout.current) clearTimeout(locationSearchTimeout.current);
     if (!q.trim()) return;
+    const qNormalized = normalizeNominatimSearchQuery(q);
+    if (!qNormalized) return;
     locationSearchTimeout.current = setTimeout(async () => {
       setLocationSearching(true);
       try {
-        const res = await fetch(
-          `https://nominatim.openstreetmap.org/search?format=json&addressdetails=1&q=${encodeURIComponent(q)}&limit=5`,
-          { headers: { 'User-Agent': 'SlowMeterApp/1.0' } }
-        );
-        const data = await res.json();
-        setLocationSuggestions(data.map((r: any) => ({ name: formatNominatimAddress(r), lat: r.lat as string, lon: r.lon as string })));
+        const data = await fetchNominatimSearch({ q, limit: 10 });
+        setLocationSuggestions(data.map((r: any) => ({ name: formatNominatimSuggestionLabel(r), lat: r.lat as string, lon: r.lon as string })));
       } catch {
         setLocationSuggestions([]);
       }
@@ -1290,7 +1399,7 @@ export default function ConversationScreen() {
   function promptSavedQuickPlanActions(t: ReusablePlanTemplate) {
     Alert.alert(
       t.title,
-      'Edit this saved quick plan or remove it from your list.',
+      undefined,
       [
         { text: 'Edit', onPress: () => openEditSavedQuickPlan(t) },
         {
@@ -1698,6 +1807,27 @@ export default function ConversationScreen() {
     }
   }
 
+  async function pinGroupPlan(plan: GroupPlan) {
+    const { error } = await supabase
+      .from('conversations')
+      .update({ pinned_plan_id: plan.id })
+      .eq('id', conversationId);
+    if (error) { Alert.alert('Could not pin plan', error.message); return; }
+    setPinnedPlan(plan);
+    setPinnedPlanId(plan.id);
+    await loadGroupPlansMap([plan.id]);
+  }
+
+  async function unpinGroupPlan() {
+    const { error } = await supabase
+      .from('conversations')
+      .update({ pinned_plan_id: null })
+      .eq('id', conversationId);
+    if (error) { Alert.alert('Could not unpin plan', error.message); return; }
+    setPinnedPlan(null);
+    setPinnedPlanId(null);
+  }
+
   async function deleteGroup() {
     Alert.alert('Delete Group?', 'This will permanently delete the group and all its messages.', [
       {
@@ -1874,28 +2004,6 @@ export default function ConversationScreen() {
 
   return (
     <View style={styles.container}>
-      {isGroup && (
-        <TouchableOpacity
-          style={styles.groupHeader}
-          onPress={() => { setEditGroupName(groupName); setNewGroupAvatarUri(null); setShowGroupSettings(true); }}
-        >
-          <View style={styles.groupHeaderAvatar}>
-            {groupAvatarUrl ? (
-              <Image source={{ uri: groupAvatarUrl }} style={styles.groupHeaderAvatarImg} />
-            ) : (
-              <Text style={styles.groupHeaderAvatarIcon}>👥</Text>
-            )}
-          </View>
-          <View style={{ flex: 1 }}>
-            <Text style={styles.groupHeaderName}>{groupName}</Text>
-            {memberCount !== null && (
-              <Text style={styles.groupMemberCount}>{memberCount} members</Text>
-            )}
-          </View>
-          <Text style={styles.groupEditHint}>Edit</Text>
-        </TouchableOpacity>
-      )}
-
       {/* Pinned event banners (up to 3) */}
       {isGroup && pinnedEvents.map((pe) => (
         <TouchableOpacity
@@ -1915,6 +2023,62 @@ export default function ConversationScreen() {
           {pe.date ? <Text style={styles.pinnedDate}>{pe.date}</Text> : null}
         </TouchableOpacity>
       ))}
+
+      {/* Pinned quick plan header */}
+      {isGroup && pinnedPlan && (() => {
+        void voterDisplayEpoch;
+        const planId = pinnedPlan.id;
+        const buckets = groupPlanRsvps[planId] ?? emptyGroupPlanRsvpBuckets();
+        const myRsvp: GroupPlanResponse | null =
+          myId && buckets.yes.includes(myId) ? 'yes'
+          : myId && buckets.no.includes(myId) ? 'no'
+          : myId && buckets.maybe.includes(myId) ? 'maybe' : null;
+        const pill = (label: string, response: GroupPlanResponse, count: number) => (
+          <TouchableOpacity
+            key={response}
+            style={[styles.groupPlanPill, myRsvp === response && styles.groupPlanPillSelected]}
+            onPress={() => setGroupPlanRsvpResponse(planId, response)}
+          >
+            <Text style={[styles.groupPlanPillLabel, myRsvp === response && styles.groupPlanPillLabelSelected]}>
+              {label}{count > 0 ? ` ${count}` : ''}
+            </Text>
+          </TouchableOpacity>
+        );
+        return (
+          <View style={styles.pinnedPlanCard}>
+            <View style={styles.pinnedPlanHeaderRow}>
+              <Text style={styles.pinnedPlanEyebrow}>📌 Pinned plan</Text>
+              <TouchableOpacity
+                hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                onPress={() => Alert.alert('Unpin plan?', 'Remove from top of chat?', [
+                  { text: 'Unpin', style: 'destructive', onPress: unpinGroupPlan },
+                  { text: 'Cancel', style: 'cancel' },
+                ])}
+              >
+                <Text style={styles.pinnedPlanUnpinBtn}>✕</Text>
+              </TouchableOpacity>
+            </View>
+            <Text style={styles.pinnedPlanTitle} numberOfLines={2}>{pinnedPlan.title}</Text>
+            {pinnedPlan.location ? <Text style={styles.pinnedPlanMeta}>📍 {pinnedPlan.location}</Text> : null}
+            {pinnedPlan.details ? <Text style={styles.pinnedPlanMeta} numberOfLines={2}>{pinnedPlan.details}</Text> : null}
+            <View style={styles.groupPlanPillRow}>
+              {pill('Yes', 'yes', buckets.yes.length)}
+              {pill('No', 'no', buckets.no.length)}
+              {pill('Maybe', 'maybe', buckets.maybe.length)}
+            </View>
+            {(['yes', 'no', 'maybe'] as const).map((k) => {
+              const ids = buckets[k];
+              if (ids.length === 0) return null;
+              return (
+                <View key={k} style={styles.groupPlanWhoRow}>
+                  <Text style={styles.groupPlanWhoLabel}>{k === 'yes' ? 'Yes' : k === 'no' ? 'No' : 'Maybe'}</Text>
+                  {renderGroupPlanVoters(ids)}
+                </View>
+              );
+            })}
+          </View>
+        );
+      })()}
 
       <KeyboardAvoidingView
         style={styles.chatKeyboardAvoid}
@@ -2141,15 +2305,23 @@ export default function ConversationScreen() {
                     style={[styles.groupPlanCard, isMe ? styles.groupPlanCardMe : styles.groupPlanCardThem]}
                     activeOpacity={0.9}
                     onLongPress={() => {
-                      if (!isMe || isDeleted) return;
-                      Alert.alert(
-                        'Delete message?',
-                        'This will replace the message with a deleted message note in the chat.',
-                        [
-                          { text: 'Cancel', style: 'cancel' },
-                          { text: 'Delete', style: 'destructive', onPress: () => softDeleteMessage(item) },
-                        ]
-                      );
+                      if (isDeleted) return;
+                      const isPinned = pinnedPlanId === plan.id;
+                      const options: any[] = [
+                        {
+                          text: isPinned ? 'Unpin plan' : 'Pin to top',
+                          onPress: () => isPinned ? unpinGroupPlan() : pinGroupPlan(plan),
+                        },
+                        { text: 'Cancel', style: 'cancel' },
+                      ];
+                      if (isMe) {
+                        options.splice(1, 0, {
+                          text: 'Delete',
+                          style: 'destructive',
+                          onPress: () => softDeleteMessage(item),
+                        });
+                      }
+                      Alert.alert(isPinned ? 'Unpin plan?' : 'Pin quick plan?', '', options);
                     }}
                   >
                     <Text style={styles.groupPlanEyebrow}>Quick plan</Text>
@@ -2682,7 +2854,6 @@ export default function ConversationScreen() {
           <View style={styles.createEventSheet}>
             <View style={styles.modalHandle} />
             <Text style={styles.modalTitle}>Quick plans</Text>
-            <Text style={styles.planPickerHint}>Pick a saved plan or create a new one for this chat. Long-press a saved plan to edit or delete.</Text>
             <TouchableOpacity
               style={styles.planPickerNewRow}
               onPress={openCreateGroupPlanFromPicker}
@@ -2696,24 +2867,37 @@ export default function ConversationScreen() {
             ) : planTemplates.length === 0 ? (
               <Text style={styles.planPickerEmpty}>No saved quick plans yet. Save one when you create a plan.</Text>
             ) : (
-              <ScrollView keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false} style={{ maxHeight: Dimensions.get('window').height * 0.45 }}>
-                {planTemplates.map((t) => (
-                  <TouchableOpacity
-                    key={t.id}
-                    style={styles.planPickerSavedRow}
-                    onPress={() => instantiateGroupPlanTemplate(t)}
-                    onLongPress={() => promptSavedQuickPlanActions(t)}
-                    delayLongPress={400}
-                    disabled={creatingGroupPlan}
-                  >
-                    <Text style={styles.planPickerSavedTitle} numberOfLines={2}>{t.title}</Text>
-                    {t.location ? <Text style={styles.planPickerSavedLocation} numberOfLines={1}>📍 {t.location}</Text> : null}
-                    {t.details ? (
-                      <Text style={styles.planPickerSavedDetails} numberOfLines={1}>{t.details}</Text>
-                    ) : null}
-                  </TouchableOpacity>
-                ))}
-              </ScrollView>
+              <>
+                <Text style={styles.planPickerSavedSectionLabel}>Your saved plans</Text>
+                <ScrollView keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false} style={{ maxHeight: Dimensions.get('window').height * 0.45 }}>
+                  {planTemplates.map((t) => (
+                    <View key={t.id} style={styles.planPickerSavedRow}>
+                      <TouchableOpacity
+                        style={styles.planPickerSavedRowMain}
+                        onPress={() => instantiateGroupPlanTemplate(t)}
+                        disabled={creatingGroupPlan}
+                        activeOpacity={0.65}
+                      >
+                        <Text style={styles.planPickerSavedTitle} numberOfLines={2}>{t.title}</Text>
+                        {t.location ? <Text style={styles.planPickerSavedLocation} numberOfLines={1}>📍 {t.location}</Text> : null}
+                        {t.details ? (
+                          <Text style={styles.planPickerSavedDetails} numberOfLines={1}>{t.details}</Text>
+                        ) : null}
+                      </TouchableOpacity>
+                      <TouchableOpacity
+                        style={styles.planPickerSavedRowManage}
+                        onPress={() => promptSavedQuickPlanActions(t)}
+                        disabled={creatingGroupPlan}
+                        accessibilityRole="button"
+                        accessibilityLabel="Edit or delete this saved plan"
+                        hitSlop={{ top: 12, bottom: 12, left: 8, right: 8 }}
+                      >
+                        <Text style={styles.planPickerSavedRowManageIcon}>⋯</Text>
+                      </TouchableOpacity>
+                    </View>
+                  ))}
+                </ScrollView>
+              </>
             )}
             {creatingGroupPlan ? (
               <View style={styles.planPickerSending}>
@@ -2832,47 +3016,75 @@ export default function ConversationScreen() {
           <TouchableOpacity style={styles.modalBackdrop} activeOpacity={1} onPress={() => setShowGroupSettings(false)} />
           <View style={styles.modalSheet}>
             <View style={styles.modalHandle} />
-            <Text style={styles.modalTitle}>Group Settings</Text>
+            <ScrollView keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false}>
+              <Text style={styles.modalTitle}>Group Settings</Text>
 
-            {/* Avatar picker */}
-            <TouchableOpacity style={styles.groupAvatarPicker} onPress={pickGroupAvatar}>
-              {newGroupAvatarUri || groupAvatarUrl ? (
-                <Image source={{ uri: newGroupAvatarUri ?? groupAvatarUrl! }} style={styles.groupAvatarPickerImg} />
-              ) : (
-                <Text style={styles.groupAvatarPickerIcon}>👥</Text>
-              )}
-              <View style={styles.groupAvatarBadge}>
-                <Text style={styles.groupAvatarBadgeText}>Edit</Text>
-              </View>
-            </TouchableOpacity>
-
-            <TextInput
-              style={styles.groupNameInput}
-              value={editGroupName}
-              onChangeText={setEditGroupName}
-              placeholder="Group name..."
-              placeholderTextColor="#999"
-            />
-
-            <TouchableOpacity
-              style={[styles.saveBtn, (!editGroupName.trim() || savingGroup) && styles.saveBtnDisabled]}
-              onPress={saveGroupSettings}
-              disabled={!editGroupName.trim() || savingGroup}
-            >
-              {savingGroup
-                ? <ActivityIndicator color="#fff" />
-                : <Text style={styles.saveBtnText}>Save</Text>
-              }
-            </TouchableOpacity>
-
-            {myId === groupCreatedBy && (
-              <TouchableOpacity
-                style={[styles.saveBtn, { backgroundColor: '#e0245e', marginTop: 12 }]}
-                onPress={() => { setShowGroupSettings(false); deleteGroup(); }}
-              >
-                <Text style={styles.saveBtnText}>Delete Group</Text>
+              <TouchableOpacity style={styles.groupAvatarPicker} onPress={pickGroupAvatar}>
+                {newGroupAvatarUri || groupAvatarUrl ? (
+                  <Image source={{ uri: newGroupAvatarUri ?? groupAvatarUrl! }} style={styles.groupAvatarPickerImg} />
+                ) : (
+                  <Text style={styles.groupAvatarPickerIcon}>👥</Text>
+                )}
+                <View style={styles.groupAvatarBadge}>
+                  <Text style={styles.groupAvatarBadgeText}>Edit</Text>
+                </View>
               </TouchableOpacity>
-            )}
+
+              <TextInput
+                style={styles.groupNameInput}
+                value={editGroupName}
+                onChangeText={setEditGroupName}
+                placeholder="Group name..."
+                placeholderTextColor="#999"
+              />
+
+              <TouchableOpacity
+                style={[styles.saveBtn, (!editGroupName.trim() || savingGroup) && styles.saveBtnDisabled]}
+                onPress={saveGroupSettings}
+                disabled={!editGroupName.trim() || savingGroup}
+              >
+                {savingGroup
+                  ? <ActivityIndicator color="#fff" />
+                  : <Text style={styles.saveBtnText}>Save</Text>
+                }
+              </TouchableOpacity>
+
+              <Text style={styles.groupSettingsMembersHeading}>Members</Text>
+              {groupMembersList.length === 0 ? (
+                <Text style={styles.groupSettingsMembersEmpty}>No members loaded.</Text>
+              ) : (
+                groupMembersList.map((m) => (
+                  <TouchableOpacity
+                    key={m.id}
+                    style={styles.groupMemberRow}
+                    onPress={() => {
+                      setShowGroupSettings(false);
+                      navigation.navigate('UserProfile', { userId: m.id });
+                    }}
+                    activeOpacity={0.65}
+                  >
+                    <View style={styles.groupMemberAvatar}>
+                      {m.avatar_url ? (
+                        <Image source={{ uri: m.avatar_url }} style={styles.groupMemberAvatarImg} />
+                      ) : (
+                        <Text style={styles.groupMemberAvatarInitial}>{m.username[0]?.toUpperCase() ?? '?'}</Text>
+                      )}
+                    </View>
+                    <Text style={styles.groupMemberName}>@{m.username}</Text>
+                    <Text style={styles.groupMemberChevron}>›</Text>
+                  </TouchableOpacity>
+                ))
+              )}
+
+              {myId === groupCreatedBy && (
+                <TouchableOpacity
+                  style={[styles.saveBtn, { backgroundColor: '#e0245e', marginTop: 20 }]}
+                  onPress={() => { setShowGroupSettings(false); deleteGroup(); }}
+                >
+                  <Text style={styles.saveBtnText}>Delete Group</Text>
+                </TouchableOpacity>
+              )}
+            </ScrollView>
           </View>
         </KeyboardAvoidingView>
       </Modal>
@@ -2890,11 +3102,6 @@ const styles = StyleSheet.create({
     borderTopWidth: 1,
     borderTopColor: '#eee',
   },
-  groupHeader: {
-    flexDirection: 'row', alignItems: 'center', gap: 10,
-    paddingVertical: 10, paddingHorizontal: 16,
-    backgroundColor: '#f0f0f0', borderBottomWidth: 1, borderBottomColor: '#e8e8e8',
-  },
   groupHeaderAvatar: {
     width: 36, height: 36, borderRadius: 18,
     backgroundColor: '#e0e0e0', alignItems: 'center', justifyContent: 'center', overflow: 'hidden',
@@ -2903,7 +3110,6 @@ const styles = StyleSheet.create({
   groupHeaderAvatarIcon: { fontSize: 18 },
   groupHeaderName: { fontSize: 13, fontWeight: '700', color: '#1a1a1a' },
   groupMemberCount: { fontSize: 11, color: '#888', marginTop: 1 },
-  groupEditHint: { fontSize: 12, color: '#888' },
   messageListFlex: { flex: 1 },
   messageList: {
     paddingHorizontal: 16,
@@ -2996,6 +3202,40 @@ const styles = StyleSheet.create({
     width: '100%', height: 48, backgroundColor: '#f5f5f5',
     borderRadius: 10, paddingHorizontal: 14, fontSize: 15, color: '#1a1a1a', marginBottom: 16,
   },
+  groupSettingsMembersHeading: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: '#888',
+    textTransform: 'uppercase',
+    letterSpacing: 0.4,
+    marginTop: 8,
+    marginBottom: 10,
+    alignSelf: 'flex-start',
+  },
+  groupSettingsMembersEmpty: { fontSize: 14, color: '#aaa', marginBottom: 8 },
+  groupMemberRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+    backgroundColor: '#f5f5f5',
+    borderRadius: 12,
+    marginBottom: 8,
+  },
+  groupMemberAvatar: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: '#e0e0e0',
+    overflow: 'hidden',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  groupMemberAvatarImg: { width: 40, height: 40 },
+  groupMemberAvatarInitial: { fontSize: 16, fontWeight: '600', color: '#888' },
+  groupMemberName: { flex: 1, fontSize: 16, fontWeight: '600', color: '#1a1a1a' },
+  groupMemberChevron: { fontSize: 22, fontWeight: '300', color: '#bbb', marginTop: -2 },
   saveBtn: {
     width: '100%', height: 50, backgroundColor: '#1a1a1a',
     borderRadius: 10, alignItems: 'center', justifyContent: 'center',
@@ -3281,7 +3521,15 @@ const styles = StyleSheet.create({
   availabilityPreviewText: { fontSize: 12, color: '#666', lineHeight: 17, marginBottom: 3 },
   availabilityPreviewMeta: { fontSize: 12, fontWeight: '700', color: '#1a1a1a', marginTop: 4 },
   // Quick plans (group chat)
-  planPickerHint: { fontSize: 13, color: '#666', marginBottom: 14, lineHeight: 18 },
+  planPickerSavedSectionLabel: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: '#888',
+    textTransform: 'uppercase',
+    letterSpacing: 0.4,
+    marginBottom: 8,
+    marginTop: 4,
+  },
   planPickerNewRow: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -3296,11 +3544,33 @@ const styles = StyleSheet.create({
   planPickerNewLabel: { fontSize: 16, fontWeight: '700', color: '#fff' },
   planPickerEmpty: { fontSize: 14, color: '#888', marginVertical: 12, lineHeight: 20 },
   planPickerSavedRow: {
-    paddingVertical: 12,
-    paddingHorizontal: 14,
+    flexDirection: 'row',
+    alignItems: 'stretch',
     backgroundColor: '#f5f5f5',
     borderRadius: 12,
     marginBottom: 8,
+    overflow: 'hidden',
+  },
+  planPickerSavedRowMain: {
+    flex: 1,
+    paddingVertical: 12,
+    paddingLeft: 14,
+    paddingRight: 4,
+    minWidth: 0,
+  },
+  planPickerSavedRowManage: {
+    justifyContent: 'center',
+    paddingHorizontal: 12,
+    borderLeftWidth: StyleSheet.hairlineWidth,
+    borderLeftColor: 'rgba(0,0,0,0.08)',
+    backgroundColor: 'rgba(255,255,255,0.45)',
+  },
+  planPickerSavedRowManageIcon: {
+    fontSize: 22,
+    fontWeight: '700',
+    color: '#555',
+    lineHeight: 24,
+    marginTop: -4,
   },
   planPickerSavedTitle: { fontSize: 15, fontWeight: '700', color: '#1a1a1a' },
   planPickerSavedLocation: { fontSize: 12, color: '#666', marginTop: 4 },
@@ -3411,4 +3681,28 @@ const styles = StyleSheet.create({
   },
   typingText: { fontSize: 12, color: '#aaa', fontStyle: 'italic' },
   typingDots: { fontSize: 12, color: '#aaa', letterSpacing: 2 },
+  pinnedPlanCard: {
+    backgroundColor: '#f0f7f0',
+    borderBottomWidth: 1,
+    borderBottomColor: '#c0d8c0',
+    paddingHorizontal: 14,
+    paddingTop: 10,
+    paddingBottom: 12,
+  },
+  pinnedPlanHeaderRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 4,
+  },
+  pinnedPlanEyebrow: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: '#4a7a4a',
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
+  },
+  pinnedPlanUnpinBtn: { fontSize: 14, color: '#888', fontWeight: '600' },
+  pinnedPlanTitle: { fontSize: 15, fontWeight: '800', color: '#1a1a1a', marginBottom: 2 },
+  pinnedPlanMeta: { fontSize: 12, color: '#555', marginBottom: 2 },
 });

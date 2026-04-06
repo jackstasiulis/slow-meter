@@ -7,8 +7,9 @@ import {
   RefreshControl,
   ActivityIndicator,
   Dimensions,
+  TouchableOpacity,
 } from 'react-native';
-import { useFocusEffect } from '@react-navigation/native';
+import { useFocusEffect, useNavigation } from '@react-navigation/native';
 import { supabase } from '../../lib/supabase';
 import { Post } from '../../types';
 import FeedMiniCard from '../../components/FeedMiniCard';
@@ -20,6 +21,118 @@ const COL_GAP = 8;
 const CARD_WIDTH = Math.floor((SCREEN_WIDTH - SIDE_PAD * 2 - COL_GAP) / 2);
 
 const DEFAULT_IMAGE_HEIGHT = Math.round(CARD_WIDTH * (4 / 3));
+
+const styles = StyleSheet.create({
+  container: {
+    flex: 1,
+    backgroundColor: '#f0efed',
+  },
+  scroll: {
+    flex: 1,
+  },
+  contentContainer: {
+    paddingBottom: 24,
+  },
+  centered: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  storiesRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    backgroundColor: '#fff',
+    borderBottomWidth: 1,
+    borderBottomColor: '#eee',
+    marginBottom: 12,
+    paddingRight: 4,
+  },
+  storiesListWrap: {
+    flex: 1,
+    minWidth: 0,
+  },
+  notifButton: {
+    position: 'relative',
+    paddingHorizontal: 6,
+    paddingVertical: 12,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  notifIcon: { fontSize: 22 },
+  notifBadge: {
+    position: 'absolute',
+    top: 6,
+    right: 2,
+    minWidth: 17,
+    height: 17,
+    borderRadius: 9,
+    backgroundColor: '#c41e3a',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 4,
+    borderWidth: 2,
+    borderColor: '#fff',
+  },
+  notifBadgeText: {
+    color: '#fff',
+    fontSize: 10,
+    fontWeight: '700',
+  },
+  columns: {
+    flexDirection: 'row',
+    paddingHorizontal: SIDE_PAD,
+    gap: COL_GAP,
+    alignItems: 'flex-start',
+  },
+  column: {
+    flex: 1,
+  },
+  empty: {
+    padding: 48,
+    alignItems: 'center',
+    gap: 8,
+  },
+  emptyTitle: {
+    fontSize: 17,
+    fontWeight: '600',
+    color: '#1a1a1a',
+  },
+  emptySubtext: {
+    fontSize: 14,
+    color: '#888',
+    textAlign: 'center',
+  },
+});
+
+function FeedStoriesHeader({
+  unreadCount,
+  onOpenNotifications,
+}: {
+  unreadCount: number;
+  onOpenNotifications: () => void;
+}) {
+  return (
+    <View style={styles.storiesRow}>
+      <View style={styles.storiesListWrap}>
+        <StoriesBar />
+      </View>
+      <TouchableOpacity
+        style={styles.notifButton}
+        onPress={onOpenNotifications}
+        accessibilityLabel="Notifications"
+      >
+        <Text style={styles.notifIcon}>🔔</Text>
+        {unreadCount > 0 ? (
+          <View style={styles.notifBadge}>
+            <Text style={styles.notifBadgeText}>
+              {unreadCount > 99 ? '99+' : String(unreadCount)}
+            </Text>
+          </View>
+        ) : null}
+      </TouchableOpacity>
+    </View>
+  );
+}
 
 // Greedy masonry split: each post goes to the shorter column
 function splitColumns(posts: Post[], heights: Record<string, number>): [Post[], Post[]] {
@@ -41,9 +154,11 @@ function splitColumns(posts: Post[], heights: Record<string, number>): [Post[], 
 }
 
 export default function FeedScreen() {
+  const navigation = useNavigation<any>();
   const [posts, setPosts] = useState<Post[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+  const [unreadNotifications, setUnreadNotifications] = useState(0);
   // Map of post.id → resolved image height (updated when FeedMiniCard reads remote dimensions)
   const [resolvedHeights, setResolvedHeights] = useState<Record<string, number>>({});
 
@@ -109,11 +224,34 @@ export default function FeedScreen() {
     setRefreshing(false);
   }
 
-  useFocusEffect(useCallback(() => { loadFeed(); }, []));
+  async function loadUnreadCount() {
+    const { data: { user } } = await supabase.auth.getUser();
+    if (!user) return;
+    const { count } = await supabase
+      .from('notifications')
+      .select('*', { count: 'exact', head: true })
+      .eq('recipient_id', user.id)
+      .eq('read', false);
+    setUnreadNotifications(count ?? 0);
+  }
+
+  useFocusEffect(
+    useCallback(() => {
+      loadFeed();
+      loadUnreadCount();
+    }, [])
+  );
+
+  function openNotifications() {
+    const parent = navigation.getParent();
+    if (parent) parent.navigate('Notifications');
+    else navigation.navigate('Notifications');
+  }
 
   const onRefresh = useCallback(() => {
     setRefreshing(true);
     loadFeed();
+    loadUnreadCount();
   }, []);
 
   function handleLikeToggle(postId: string, liked: boolean) {
@@ -126,109 +264,59 @@ export default function FeedScreen() {
     );
   }
 
-  if (loading) {
-    return (
-      <View style={styles.centered}>
-        <ActivityIndicator size="large" color="#1a1a1a" />
-      </View>
-    );
-  }
-
-  const [leftCol, rightCol] = splitColumns(posts, resolvedHeights);
+  const [leftCol, rightCol] = loading
+    ? [[], []] as [Post[], Post[]]
+    : splitColumns(posts, resolvedHeights);
 
   return (
-    <ScrollView
-      style={styles.container}
-      contentContainerStyle={styles.contentContainer}
-      showsVerticalScrollIndicator={false}
-      refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} />}
-    >
-      {/* Stories strip */}
-      <View style={styles.storiesContainer}>
-        <StoriesBar />
-      </View>
-
-      {posts.length === 0 ? (
-        <View style={styles.empty}>
-          <Text style={styles.emptyTitle}>Your feed is quiet</Text>
-          <Text style={styles.emptySubtext}>Follow people to see their posts here</Text>
+    <View style={styles.container}>
+      <FeedStoriesHeader unreadCount={unreadNotifications} onOpenNotifications={openNotifications} />
+      {loading ? (
+        <View style={styles.centered}>
+          <ActivityIndicator size="large" color="#1a1a1a" />
         </View>
       ) : (
-        <View style={styles.columns}>
-          {/* Left column */}
-          <View style={styles.column}>
-            {leftCol.map((post) => (
-              <FeedMiniCard
-                key={post.id}
-                post={post}
-                cardWidth={CARD_WIDTH}
-                imageHeight={resolvedHeights[post.id] ?? DEFAULT_IMAGE_HEIGHT}
-                onLikeToggle={handleLikeToggle}
-                onHeightResolved={handleHeightResolved}
-              />
-            ))}
-          </View>
-
-          {/* Right column */}
-          <View style={styles.column}>
-            {rightCol.map((post) => (
-              <FeedMiniCard
-                key={post.id}
-                post={post}
-                cardWidth={CARD_WIDTH}
-                imageHeight={resolvedHeights[post.id] ?? DEFAULT_IMAGE_HEIGHT}
-                onLikeToggle={handleLikeToggle}
-                onHeightResolved={handleHeightResolved}
-              />
-            ))}
-          </View>
-        </View>
+        <ScrollView
+          style={styles.scroll}
+          contentContainerStyle={styles.contentContainer}
+          showsVerticalScrollIndicator={false}
+          refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} />}
+        >
+          {posts.length === 0 ? (
+            <View style={styles.empty}>
+              <Text style={styles.emptyTitle}>Your feed is quiet</Text>
+              <Text style={styles.emptySubtext}>Follow people to see their posts here</Text>
+            </View>
+          ) : (
+            <View style={styles.columns}>
+              <View style={styles.column}>
+                {leftCol.map((post) => (
+                  <FeedMiniCard
+                    key={post.id}
+                    post={post}
+                    cardWidth={CARD_WIDTH}
+                    imageHeight={resolvedHeights[post.id] ?? DEFAULT_IMAGE_HEIGHT}
+                    onLikeToggle={handleLikeToggle}
+                    onHeightResolved={handleHeightResolved}
+                  />
+                ))}
+              </View>
+              <View style={styles.column}>
+                {rightCol.map((post) => (
+                  <FeedMiniCard
+                    key={post.id}
+                    post={post}
+                    cardWidth={CARD_WIDTH}
+                    imageHeight={resolvedHeights[post.id] ?? DEFAULT_IMAGE_HEIGHT}
+                    onLikeToggle={handleLikeToggle}
+                    onHeightResolved={handleHeightResolved}
+                  />
+                ))}
+              </View>
+            </View>
+          )}
+        </ScrollView>
       )}
-    </ScrollView>
+    </View>
   );
 }
-
-const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: '#f0efed',
-  },
-  contentContainer: {
-    paddingBottom: 24,
-  },
-  centered: {
-    flex: 1,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  storiesContainer: {
-    backgroundColor: '#fff',
-    marginBottom: 12,
-    borderBottomWidth: 1,
-    borderBottomColor: '#eee',
-  },
-  columns: {
-    flexDirection: 'row',
-    paddingHorizontal: SIDE_PAD,
-    gap: COL_GAP,
-    alignItems: 'flex-start',
-  },
-  column: {
-    flex: 1,
-  },
-  empty: {
-    padding: 48,
-    alignItems: 'center',
-    gap: 8,
-  },
-  emptyTitle: {
-    fontSize: 17,
-    fontWeight: '600',
-    color: '#1a1a1a',
-  },
-  emptySubtext: {
-    fontSize: 14,
-    color: '#888',
-    textAlign: 'center',
-  },
-});

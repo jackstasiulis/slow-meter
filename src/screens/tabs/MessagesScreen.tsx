@@ -18,10 +18,23 @@ import {
   Dimensions,
 } from 'react-native';
 import { useNavigation, useFocusEffect } from '@react-navigation/native';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import { supabase } from '../../lib/supabase';
 
 const SCREEN_WIDTH = Dimensions.get('window').width;
-const TABS = ['Messages', 'Groups', 'Events'] as const;
-import { supabase } from '../../lib/supabase';
+const MESSAGES_SUBTAB_KEY = '@slow_meter_messages_subtab';
+
+async function persistMessagesSubTab(index: number) {
+  await AsyncStorage.setItem(MESSAGES_SUBTAB_KEY, index === 1 ? 'groups' : 'messages');
+}
+/** Space so list scroll ends above the floating add button */
+const LIST_PAD_BELOW_FAB = 88;
+
+/** Messages first (default); Groups is visually highlighted as the hub tab. */
+const MESSAGE_TABS = [
+  { label: 'Messages' as const, spotlight: false },
+  { label: 'Groups' as const, spotlight: true },
+] as const;
 
 type ConversationRow = {
   id: string;
@@ -85,18 +98,6 @@ function ConvRow({ item, onPress }: { item: ConversationRow; onPress: () => void
   );
 }
 
-type EventRow = {
-  id: string;
-  title: string;
-  date: string | null;
-  time: string | null;
-  location: string | null;
-  conversation_id: string;
-  group_name: string | null;
-  created_at: string;
-  created_by: string;
-};
-
 export default function MessagesScreen() {
   const navigation = useNavigation<any>();
 
@@ -104,21 +105,39 @@ export default function MessagesScreen() {
   const scrollRef = useRef<ScrollView>(null);
   const scrollX = useRef(new Animated.Value(0)).current;
   const [activeIndex, setActiveIndex] = useState(0);
+  const prevLoadingRef = useRef(true);
 
   function goToTab(index: number) {
     scrollRef.current?.scrollTo({ x: index * SCREEN_WIDTH, animated: true });
     setActiveIndex(index);
+    void persistMessagesSubTab(index);
   }
+
+  /** Restore Messages vs Groups when opening this screen (e.g. tapping the Messages tab). */
+  useFocusEffect(
+    useCallback(() => {
+      let cancelled = false;
+      (async () => {
+        const raw = await AsyncStorage.getItem(MESSAGES_SUBTAB_KEY);
+        if (cancelled) return;
+        const idx = raw === 'groups' ? 1 : 0;
+        setActiveIndex(idx);
+        requestAnimationFrame(() => {
+          if (!cancelled) {
+            scrollRef.current?.scrollTo({ x: idx * SCREEN_WIDTH, animated: false });
+          }
+        });
+      })();
+      return () => {
+        cancelled = true;
+      };
+    }, [])
+  );
 
   const [dms, setDms] = useState<ConversationRow[]>([]);
   const [groups, setGroups] = useState<ConversationRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
-
-  // Events tab
-  const [events, setEvents] = useState<EventRow[]>([]);
-  const [eventsLoading, setEventsLoading] = useState(false);
-  const [myId, setMyId] = useState<string | null>(null);
 
   // New DM modal
   const [showNewMsg, setShowNewMsg] = useState(false);
@@ -135,54 +154,26 @@ export default function MessagesScreen() {
   const [groupMembers, setGroupMembers] = useState<{ id: string; username: string }[]>([]);
   const [creatingGroup, setCreatingGroup] = useState(false);
 
-  useFocusEffect(useCallback(() => {
-    loadConversations();
-  }, []));
+  useFocusEffect(
+    useCallback(() => {
+      loadConversations();
+    }, [])
+  );
 
+  // After initial load, horizontal pager exists — sync scroll to stored sub-tab if focus/storage raced with loading.
   useEffect(() => {
-    if (activeIndex === 2) loadEvents();
-  }, [activeIndex]);
+    if (prevLoadingRef.current && !loading) {
+      prevLoadingRef.current = false;
+      requestAnimationFrame(() => {
+        scrollRef.current?.scrollTo({ x: activeIndex * SCREEN_WIDTH, animated: false });
+      });
+    }
+    if (loading) prevLoadingRef.current = true;
+  }, [loading, activeIndex]);
 
   function onRefresh() {
     setRefreshing(true);
     loadConversations();
-    if (activeIndex === 2) loadEvents();
-  }
-
-  async function loadEvents() {
-    setEventsLoading(true);
-    const { data: { user } } = await supabase.auth.getUser();
-    if (user) setMyId(user.id);
-
-    const { data } = await supabase
-      .from('events')
-      .select('id, title, date, time, location, conversation_id, created_at, created_by')
-      .order('created_at', { ascending: false });
-
-    if (!data || data.length === 0) { setEvents([]); setEventsLoading(false); return; }
-
-    // Fetch group names separately to avoid nested RLS issues
-    const convIds = [...new Set(data.map((e: any) => e.conversation_id))];
-    const { data: convData } = await supabase
-      .from('conversations')
-      .select('id, name')
-      .in('id', convIds);
-    const convMap: Record<string, string> = {};
-    for (const c of convData ?? []) convMap[c.id] = c.name;
-
-    const rows: EventRow[] = data.map((e: any) => ({
-      id: e.id,
-      title: e.title,
-      date: e.date ?? null,
-      time: e.time ?? null,
-      location: e.location ?? null,
-      conversation_id: e.conversation_id,
-      group_name: convMap[e.conversation_id] ?? null,
-      created_at: e.created_at,
-      created_by: e.created_by,
-    }));
-    setEvents(rows);
-    setEventsLoading(false);
   }
 
   async function loadConversations() {
@@ -414,8 +405,8 @@ export default function MessagesScreen() {
   if (loading) return <ActivityIndicator style={{ flex: 1 }} color="#1a1a1a" />;
 
   const indicatorLeft = scrollX.interpolate({
-    inputRange: [0, SCREEN_WIDTH, SCREEN_WIDTH * 2],
-    outputRange: ['0%', '33.33%', '66.66%'],
+    inputRange: [0, SCREEN_WIDTH],
+    outputRange: ['0%', '50%'],
     extrapolate: 'clamp',
   });
 
@@ -424,31 +415,26 @@ export default function MessagesScreen() {
       <View style={styles.container}>
         {/* Tab header */}
         <View style={styles.tabHeader}>
-          {TABS.map((label, i) => (
-            <TouchableOpacity key={label} style={styles.tabHeaderBtn} onPress={() => goToTab(i)}>
-              <Text style={[styles.tabHeaderText, activeIndex === i && styles.tabHeaderTextActive]}>
-                {label}
-              </Text>
+          {MESSAGE_TABS.map((tab, i) => (
+            <TouchableOpacity key={tab.label} style={styles.tabHeaderBtn} onPress={() => goToTab(i)}>
+              {tab.spotlight ? (
+                <View style={[styles.groupsTabPill, activeIndex === i && styles.groupsTabPillActive]}>
+                  <Text
+                    style={[styles.groupsTabPillText, activeIndex === i && styles.groupsTabPillTextActive]}
+                    numberOfLines={1}
+                  >
+                    👥 {tab.label}
+                  </Text>
+                </View>
+              ) : (
+                <Text style={[styles.tabHeaderText, activeIndex === i && styles.tabHeaderTextActive]}>
+                  {tab.label}
+                </Text>
+              )}
             </TouchableOpacity>
           ))}
           <Animated.View style={[styles.tabIndicator, { left: indicatorLeft }]} />
         </View>
-
-        {/* Action buttons row — only shown when relevant page is active */}
-        {activeIndex === 0 && (
-          <View style={styles.btnRow}>
-            <TouchableOpacity style={styles.newBtn} onPress={() => setShowNewMsg(true)}>
-              <Text style={styles.newBtnText}>+ Message</Text>
-            </TouchableOpacity>
-          </View>
-        )}
-        {activeIndex === 1 && (
-          <View style={styles.btnRow}>
-            <TouchableOpacity style={styles.newBtn} onPress={() => setShowNewGroup(true)}>
-              <Text style={styles.newBtnText}>+ Group</Text>
-            </TouchableOpacity>
-          </View>
-        )}
 
         {/* Swipeable pages */}
         <ScrollView
@@ -470,11 +456,12 @@ export default function MessagesScreen() {
           )}
           style={styles.pager}
         >
-          {/* Page 0: Messages (DMs) */}
+          {/* Page 0: Direct messages */}
           <View style={styles.page}>
             <FlatList
               data={dms}
               keyExtractor={(item) => item.id}
+              contentContainerStyle={styles.listWithFabPad}
               refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} />}
               ListEmptyComponent={
                 <View style={styles.empty}>
@@ -493,6 +480,7 @@ export default function MessagesScreen() {
             <FlatList
               data={groups}
               keyExtractor={(item) => item.id}
+              contentContainerStyle={styles.listWithFabPad}
               refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} />}
               ListEmptyComponent={
                 <View style={styles.empty}>
@@ -506,48 +494,32 @@ export default function MessagesScreen() {
             />
           </View>
 
-          {/* Page 2: Events */}
-          <View style={styles.page}>
-            {eventsLoading ? (
-              <ActivityIndicator style={{ marginTop: 40 }} color="#1a1a1a" />
-            ) : (
-              <FlatList
-                data={events}
-                keyExtractor={(item) => item.id}
-                refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} />}
-                ListEmptyComponent={
-                  <View style={styles.empty}>
-                    <Text style={styles.emptyTitle}>No events yet</Text>
-                    <Text style={styles.emptySubtext}>Create an event in a group chat</Text>
-                  </View>
-                }
-                renderItem={({ item }) => (
-                  <TouchableOpacity
-                    style={styles.eventRow}
-                    onPress={() => navigation.navigate('EventDetail', { eventId: item.id })}
-                  >
-                    <Text style={styles.eventRowEmoji}>📅</Text>
-                    <View style={styles.eventRowText}>
-                      <View style={styles.eventRowTitleRow}>
-                        {item.group_name ? <Text style={styles.eventRowGroup}>{item.group_name}</Text> : null}
-                        {item.created_by === myId && (
-                          <View style={styles.eventRowYouBadge}>
-                            <Text style={styles.eventRowYouText}>You</Text>
-                          </View>
-                        )}
-                      </View>
-                      <Text style={styles.eventRowTitle}>{item.title}</Text>
-                      {item.date || item.time ? (
-                        <Text style={styles.eventRowMeta}>{[item.date, item.time].filter(Boolean).join(' · ')}</Text>
-                      ) : null}
-                      {item.location ? <Text style={styles.eventRowMeta}>📍 {item.location}</Text> : null}
-                    </View>
-                  </TouchableOpacity>
-                )}
-              />
-            )}
-          </View>
         </ScrollView>
+
+        {activeIndex === 0 && (
+          <TouchableOpacity
+            style={styles.fab}
+            onPress={() => setShowNewMsg(true)}
+            activeOpacity={0.85}
+            accessibilityLabel="New message"
+            accessibilityRole="button"
+          >
+            <Text style={styles.fabPlus}>+</Text>
+            <Text style={styles.fabHint}>Message</Text>
+          </TouchableOpacity>
+        )}
+        {activeIndex === 1 && (
+          <TouchableOpacity
+            style={styles.fab}
+            onPress={() => setShowNewGroup(true)}
+            activeOpacity={0.85}
+            accessibilityLabel="New group"
+            accessibilityRole="button"
+          >
+            <Text style={styles.fabPlus}>+</Text>
+            <Text style={styles.fabHint}>Group</Text>
+          </TouchableOpacity>
+        )}
       </View>
 
       {/* New DM modal */}
@@ -660,14 +632,38 @@ export default function MessagesScreen() {
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#fafaf8' },
-  btnRow: { flexDirection: 'row', gap: 10, margin: 12 },
-  newBtn: {
-    flex: 1, padding: 14, backgroundColor: '#1a1a1a',
-    borderRadius: 10, alignItems: 'center',
+  listWithFabPad: { paddingBottom: LIST_PAD_BELOW_FAB },
+  fab: {
+    position: 'absolute',
+    right: 20,
+    bottom: 20,
+    minWidth: 56,
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    borderRadius: 28,
+    backgroundColor: '#1a1a1a',
+    alignItems: 'center',
+    justifyContent: 'center',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 3 },
+    shadowOpacity: 0.18,
+    shadowRadius: 6,
+    elevation: 6,
   },
-  newBtnText: { color: '#fff', fontSize: 15, fontWeight: '600' },
-  newBtnOutline: { backgroundColor: '#fff', borderWidth: 1, borderColor: '#ddd' },
-  newBtnOutlineText: { color: '#1a1a1a', fontSize: 15, fontWeight: '600' },
+  fabPlus: {
+    color: '#fff',
+    fontSize: 28,
+    fontWeight: '300',
+    lineHeight: 30,
+    marginTop: -2,
+  },
+  fabHint: {
+    color: 'rgba(255,255,255,0.92)',
+    fontSize: 11,
+    fontWeight: '700',
+    letterSpacing: 0.3,
+    marginTop: 2,
+  },
   row: {
     flexDirection: 'row', alignItems: 'center',
     padding: 14, gap: 12,
@@ -733,44 +729,42 @@ const styles = StyleSheet.create({
   createBtnDisabled: { backgroundColor: '#ccc' },
   createBtnText: { color: '#fff', fontSize: 15, fontWeight: '600' },
   tabHeader: {
-    flexDirection: 'row', backgroundColor: '#fff',
-    borderBottomWidth: 1, borderBottomColor: '#f0f0f0',
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#fff',
+    borderBottomWidth: 1,
+    borderBottomColor: '#f0f0f0',
     position: 'relative',
   },
-  tabHeaderBtn: { flex: 1, alignItems: 'center', paddingVertical: 13 },
+  tabHeaderBtn: { flex: 1, alignItems: 'center', justifyContent: 'center', paddingVertical: 10 },
   tabHeaderText: { fontSize: 14, fontWeight: '600', color: '#aaa' },
   tabHeaderTextActive: { color: '#1a1a1a' },
+  groupsTabPill: {
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 100,
+    backgroundColor: '#ebe6dc',
+    borderWidth: 1,
+    borderColor: '#ddd8ce',
+    maxWidth: '100%',
+  },
+  groupsTabPillActive: {
+    backgroundColor: '#1a1a1a',
+    borderColor: '#1a1a1a',
+  },
+  groupsTabPillText: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: '#3a342b',
+    letterSpacing: -0.2,
+  },
+  groupsTabPillTextActive: {
+    color: '#fff',
+  },
   tabIndicator: {
     position: 'absolute', bottom: 0, height: 2,
-    width: '33.33%', backgroundColor: '#1a1a1a', borderRadius: 1,
+    width: '50%', backgroundColor: '#1a1a1a', borderRadius: 1,
   },
   pager: { flex: 1 },
   page: { width: SCREEN_WIDTH, flex: 1 },
-  eventRowTitleRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-    marginBottom: 2,
-  },
-  eventRowYouBadge: {
-    backgroundColor: '#1a1a1a',
-    borderRadius: 6,
-    paddingHorizontal: 6,
-    paddingVertical: 2,
-  },
-  eventRowYouText: {
-    fontSize: 10,
-    fontWeight: '700',
-    color: '#fff',
-    letterSpacing: 0.3,
-  },
-  eventRow: {
-    flexDirection: 'row', alignItems: 'flex-start', gap: 12,
-    padding: 14, borderBottomWidth: 1, borderBottomColor: '#f0f0f0', backgroundColor: '#fff',
-  },
-  eventRowEmoji: { fontSize: 24, marginTop: 2 },
-  eventRowText: { flex: 1 },
-  eventRowGroup: { fontSize: 11, fontWeight: '600', color: '#888', textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 2 },
-  eventRowTitle: { fontSize: 15, fontWeight: '700', color: '#1a1a1a', marginBottom: 3 },
-  eventRowMeta: { fontSize: 13, color: '#555', marginTop: 2 },
 });

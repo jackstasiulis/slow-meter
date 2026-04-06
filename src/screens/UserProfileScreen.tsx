@@ -1,28 +1,37 @@
-import React, { useEffect, useState, useCallback } from 'react';
+import React, { useEffect, useRef, useState, useCallback } from 'react';
 import {
+  Animated,
   View,
   Text,
   FlatList,
   Image,
   TouchableOpacity,
   StyleSheet,
-  Dimensions,
   ActivityIndicator,
   RefreshControl,
-  Modal,
   Alert,
 } from 'react-native';
 import { useRoute, useNavigation } from '@react-navigation/native';
+import { BlurView } from 'expo-blur';
+import { LinearGradient } from 'expo-linear-gradient';
 import { supabase } from '../lib/supabase';
-
-const SCREEN_WIDTH = Dimensions.get('window').width;
-const GRID_SIZE = (SCREEN_WIDTH - 4) / 3;
+import ProfileHeroHeader from '../components/profile/ProfileHeroHeader';
+import ProfileLinksSheet from '../components/profile/ProfileLinksSheet';
+import {
+  PROFILE_CARD_HEIGHT,
+  PROFILE_CARD_WIDTH,
+  PROFILE_GRID_COL_GAP,
+  PROFILE_GRID_H_PAD,
+  PROFILE_GRID_ROW_GAP,
+  PROFILE_HERO_HEIGHT,
+} from '../components/profile/constants';
 
 type Profile = {
   id: string;
   username: string;
   display_name: string | null;
   avatar_url: string | null;
+  cover_url: string | null;
   bio: string | null;
   link_count: number;
 };
@@ -32,6 +41,7 @@ type LinkStatus = 'none' | 'pending_sent' | 'pending_received' | 'linked';
 export default function UserProfileScreen() {
   const route = useRoute<any>();
   const navigation = useNavigation<any>();
+  const scrollY = useRef(new Animated.Value(0)).current;
   const { userId } = route.params;
 
   const [profile, setProfile] = useState<Profile | null>(null);
@@ -45,6 +55,7 @@ export default function UserProfileScreen() {
   const [linksModal, setLinksModal] = useState(false);
   const [linkUsers, setLinkUsers] = useState<{ id: string; username: string; avatar_url: string | null }[]>([]);
   const [linksLoading, setLinksLoading] = useState(false);
+  const contentGlassTranslateY = Animated.multiply(scrollY, -1);
 
   async function load() {
     const { data: { user } } = await supabase.auth.getUser();
@@ -52,7 +63,7 @@ export default function UserProfileScreen() {
     setMyId(user.id);
 
     const [{ data: profileData }, { data: postsData }, { count: lc }] = await Promise.all([
-      supabase.from('users').select('id, username, display_name, avatar_url, bio').eq('id', userId).single(),
+      supabase.from('users').select('id, username, display_name, avatar_url, cover_url, bio').eq('id', userId).single(),
       supabase.from('posts').select('*, user:users!posts_user_id_fkey(id, username, avatar_url)').eq('user_id', userId).order('created_at', { ascending: false }),
       supabase.from('links').select('*', { count: 'exact', head: true }).or(`user_a_id.eq.${userId},user_b_id.eq.${userId}`),
     ]);
@@ -276,56 +287,79 @@ export default function UserProfileScreen() {
   if (loading) return <ActivityIndicator style={{ flex: 1 }} color="#1a1a1a" />;
 
   return (
-    <>
-      <FlatList
+    <View style={styles.screen}>
+      {profile?.cover_url ? (
+        <Image source={{ uri: profile.cover_url }} style={styles.backgroundImage} resizeMode="cover" />
+      ) : (
+        <View style={styles.backgroundFallback} />
+      )}
+      <LinearGradient
+        colors={['rgba(0,0,0,0.15)', 'rgba(0,0,0,0.38)', 'rgba(0,0,0,0.72)']}
+        start={{ x: 0.5, y: 0 }}
+        end={{ x: 0.5, y: 1 }}
+        style={styles.backgroundGradient}
+      />
+      <Animated.View
+        pointerEvents="none"
+        style={[
+          styles.contentGlassLayer,
+          { transform: [{ translateY: contentGlassTranslateY }] },
+        ]}
+      >
+        <BlurView intensity={10} tint="dark" style={styles.contentGlassBlurSoft} />
+        <BlurView intensity={22} tint="dark" style={styles.contentGlassBlurMid} />
+        <BlurView intensity={40} tint="dark" style={styles.contentGlassBlurStrong} />
+        <LinearGradient
+          colors={[
+            'rgba(255,255,255,0)',
+            'rgba(10,10,10,0.04)',
+            'rgba(10,10,10,0.12)',
+            'rgba(10,10,10,0.24)',
+            'rgba(10,10,10,0.36)',
+          ]}
+          start={{ x: 0.5, y: 0 }}
+          end={{ x: 0.5, y: 1 }}
+          style={styles.contentGlassGradient}
+        />
+      </Animated.View>
+
+      <Animated.FlatList
         data={posts}
         keyExtractor={(item) => item.id}
-        numColumns={3}
-        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} />}
+        numColumns={2}
+        columnWrapperStyle={styles.gridRow}
+        contentContainerStyle={styles.gridListContent}
+        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor="#fff" />}
         style={styles.container}
         ListHeaderComponent={
-          <View style={styles.header}>
-            <View style={styles.avatarCircle}>
-              {profile?.avatar_url ? (
-                <Image source={{ uri: profile.avatar_url }} style={styles.avatar} />
-              ) : (
-                <Text style={styles.avatarInitial}>
-                  {(profile?.username ?? '?')[0].toUpperCase()}
-                </Text>
-              )}
-            </View>
-
-            <View style={styles.statsRow}>
-              <View style={styles.stat}>
-                <Text style={styles.statNumber}>{posts.length}</Text>
-                <Text style={styles.statLabel}>posts</Text>
+          <ProfileHeroHeader
+            coverUrl={profile?.cover_url}
+            avatarUrl={profile?.avatar_url}
+            username={profile?.username}
+            displayName={profile?.display_name}
+            bio={profile?.bio}
+            stats={[
+              { key: 'posts', value: posts.length, label: 'Posts' },
+              { key: 'links', value: profile?.link_count ?? 0, label: 'Links', onPress: openLinks },
+            ]}
+            actionRow={
+              <View style={styles.actions}>
+                {renderLinkButton()}
+                {myId !== userId && (
+                  <TouchableOpacity style={styles.messageBtn} onPress={openMessage}>
+                    <Text style={styles.messageBtnText}>Message</Text>
+                  </TouchableOpacity>
+                )}
               </View>
-              <TouchableOpacity style={styles.stat} onPress={openLinks}>
-                <Text style={styles.statNumber}>{profile?.link_count ?? 0}</Text>
-                <Text style={styles.statLabel}>links</Text>
-              </TouchableOpacity>
-            </View>
-
-            <Text style={styles.username}>@{profile?.username}</Text>
-            {profile?.display_name ? <Text style={styles.displayName}>{profile.display_name}</Text> : null}
-            {profile?.bio ? <Text style={styles.bio}>{profile.bio}</Text> : null}
-
-            <View style={styles.actions}>
-              {renderLinkButton()}
-              {myId !== userId && (
-                <TouchableOpacity style={styles.messageBtn} onPress={openMessage}>
-                  <Text style={styles.messageBtnText}>Message</Text>
-                </TouchableOpacity>
-              )}
-            </View>
-          </View>
+            }
+          />
         }
         renderItem={({ item }) => (
           <TouchableOpacity
             style={styles.gridItem}
             onPress={() => navigation.navigate('PostDetail', { post: item })}
           >
-            <Image source={{ uri: item.media_url }} style={styles.gridImage} />
+            <Image source={{ uri: item.media_url }} style={styles.gridImage} resizeMode="cover" />
           </TouchableOpacity>
         )}
         ListEmptyComponent={
@@ -333,95 +367,108 @@ export default function UserProfileScreen() {
             <Text style={styles.emptyText}>No posts yet</Text>
           </View>
         }
+        onScroll={Animated.event(
+          [{ nativeEvent: { contentOffset: { y: scrollY } } }],
+          { useNativeDriver: true },
+        )}
+        scrollEventThrottle={16}
       />
 
-      <Modal visible={linksModal} animationType="slide" transparent onRequestClose={() => setLinksModal(false)}>
-        <View style={styles.modalOverlay}>
-          <TouchableOpacity style={styles.modalBackdrop} activeOpacity={1} onPress={() => setLinksModal(false)} />
-          <View style={styles.modalSheet}>
-            <View style={styles.handle} />
-            <Text style={styles.modalTitle}>Links</Text>
-            {linksLoading ? (
-              <ActivityIndicator color="#1a1a1a" style={{ marginTop: 20 }} />
-            ) : linkUsers.length === 0 ? (
-              <Text style={styles.emptyList}>No links yet</Text>
-            ) : (
-              <FlatList
-                data={linkUsers}
-                keyExtractor={(u) => u.id}
-                contentContainerStyle={styles.listContent}
-                renderItem={({ item }) => (
-                  <TouchableOpacity
-                    style={styles.userRow}
-                    onPress={() => { setLinksModal(false); navigation.navigate('UserProfile', { userId: item.id }); }}
-                  >
-                    <View style={styles.userAvatar}>
-                      {item.avatar_url ? (
-                        <Image source={{ uri: item.avatar_url }} style={styles.userAvatarImg} />
-                      ) : (
-                        <Text style={styles.userAvatarInitial}>{item.username[0]?.toUpperCase()}</Text>
-                      )}
-                    </View>
-                    <Text style={styles.userUsername}>@{item.username}</Text>
-                  </TouchableOpacity>
-                )}
-              />
-            )}
-          </View>
-        </View>
-      </Modal>
-    </>
+      <ProfileLinksSheet
+        visible={linksModal}
+        users={linkUsers}
+        loading={linksLoading}
+        onClose={() => setLinksModal(false)}
+        onPressUser={(id) => {
+          setLinksModal(false);
+          navigation.navigate('UserProfile', { userId: id });
+        }}
+      />
+    </View>
   );
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#fafaf8' },
-  header: { padding: 20, alignItems: 'center', borderBottomWidth: 1, borderBottomColor: '#eee', marginBottom: 2 },
-  avatarCircle: {
-    width: 88, height: 88, borderRadius: 44,
-    backgroundColor: '#e0e0e0', alignItems: 'center', justifyContent: 'center',
-    marginBottom: 16, overflow: 'hidden',
+  screen: { flex: 1, backgroundColor: '#000' },
+  backgroundImage: {
+    ...StyleSheet.absoluteFillObject,
+    width: '100%',
+    height: '100%',
   },
-  avatar: { width: 88, height: 88 },
-  avatarInitial: { fontSize: 36, fontWeight: '600', color: '#888' },
-  statsRow: { flexDirection: 'row', gap: 32, marginBottom: 12 },
-  stat: { alignItems: 'center' },
-  statNumber: { fontSize: 18, fontWeight: '700', color: '#1a1a1a' },
-  statLabel: { fontSize: 12, color: '#888', marginTop: 2 },
-  username: { fontSize: 15, fontWeight: '600', color: '#1a1a1a', marginBottom: 4 },
-  displayName: { fontSize: 15, color: '#1a1a1a', marginBottom: 4 },
-  bio: { fontSize: 14, color: '#555', textAlign: 'center', marginBottom: 8 },
-  actions: { flexDirection: 'row', gap: 10, marginTop: 12, flexWrap: 'wrap', justifyContent: 'center' },
-  linkBtn: { paddingHorizontal: 24, paddingVertical: 8, backgroundColor: '#1a1a1a', borderRadius: 8 },
-  linkBtnText: { fontSize: 14, fontWeight: '600', color: '#fff' },
-  requestedBtn: { paddingHorizontal: 24, paddingVertical: 8, backgroundColor: '#eee', borderRadius: 8 },
-  requestedBtnText: { fontSize: 14, fontWeight: '600', color: '#888' },
-  linkedBtn: { paddingHorizontal: 24, paddingVertical: 8, backgroundColor: '#eee', borderRadius: 8 },
-  linkedBtnText: { fontSize: 14, fontWeight: '600', color: '#1a1a1a' },
+  backgroundFallback: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: '#222',
+  },
+  backgroundGradient: {
+    ...StyleSheet.absoluteFillObject,
+  },
+  contentGlassLayer: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    top: Math.round(PROFILE_HERO_HEIGHT * 0.48),
+    height: PROFILE_HERO_HEIGHT + 2400,
+  },
+  contentGlassBlurSoft: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    top: 0,
+    height: 180,
+    opacity: 0.16,
+  },
+  contentGlassBlurMid: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    top: 70,
+    height: 280,
+    opacity: 0.28,
+  },
+  contentGlassBlurStrong: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    top: 160,
+    bottom: 0,
+    opacity: 0.42,
+  },
+  contentGlassGradient: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    top: 0,
+    bottom: 0,
+  },
+  container: { flex: 1, backgroundColor: 'transparent' },
+  actions: { flexDirection: 'row', gap: 10, flexWrap: 'wrap', justifyContent: 'center' },
+  linkBtn: { paddingHorizontal: 24, paddingVertical: 11, backgroundColor: '#fff', borderRadius: 999, minWidth: 124, alignItems: 'center' },
+  linkBtnText: { fontSize: 15, fontWeight: '700', color: '#1a1a1a' },
+  requestedBtn: { paddingHorizontal: 24, paddingVertical: 11, backgroundColor: 'rgba(255,255,255,0.3)', borderRadius: 999, minWidth: 124, alignItems: 'center', borderWidth: 1, borderColor: 'rgba(255,255,255,0.45)' },
+  requestedBtnText: { fontSize: 15, fontWeight: '700', color: '#fff' },
+  linkedBtn: { paddingHorizontal: 24, paddingVertical: 11, backgroundColor: 'rgba(255,255,255,0.22)', borderRadius: 999, minWidth: 124, alignItems: 'center', borderWidth: 1, borderColor: 'rgba(255,255,255,0.55)' },
+  linkedBtnText: { fontSize: 15, fontWeight: '700', color: '#fff' },
   requestActions: { flexDirection: 'row', gap: 8 },
-  acceptBtn: { paddingHorizontal: 20, paddingVertical: 8, backgroundColor: '#1a1a1a', borderRadius: 8 },
-  acceptBtnText: { fontSize: 14, fontWeight: '600', color: '#fff' },
-  declineBtn: { paddingHorizontal: 20, paddingVertical: 8, borderWidth: 1, borderColor: '#ddd', borderRadius: 8 },
-  declineBtnText: { fontSize: 14, fontWeight: '600', color: '#888' },
-  messageBtn: { paddingHorizontal: 24, paddingVertical: 8, borderWidth: 1, borderColor: '#ddd', borderRadius: 8 },
-  messageBtnText: { fontSize: 14, fontWeight: '600', color: '#1a1a1a' },
-  gridItem: { width: GRID_SIZE, height: GRID_SIZE, margin: 1 },
+  acceptBtn: { paddingHorizontal: 20, paddingVertical: 11, backgroundColor: '#fff', borderRadius: 999, minWidth: 110, alignItems: 'center' },
+  acceptBtnText: { fontSize: 15, fontWeight: '700', color: '#1a1a1a' },
+  declineBtn: { paddingHorizontal: 20, paddingVertical: 11, borderWidth: 1, borderColor: 'rgba(255,255,255,0.7)', borderRadius: 999, minWidth: 110, alignItems: 'center' },
+  declineBtnText: { fontSize: 15, fontWeight: '700', color: '#fff' },
+  messageBtn: { paddingHorizontal: 24, paddingVertical: 11, borderWidth: 1, borderColor: 'rgba(255,255,255,0.75)', borderRadius: 999, minWidth: 124, alignItems: 'center' },
+  messageBtnText: { fontSize: 15, fontWeight: '700', color: '#fff' },
+  gridListContent: { paddingBottom: 24 },
+  gridRow: {
+    paddingHorizontal: PROFILE_GRID_H_PAD,
+    gap: PROFILE_GRID_COL_GAP,
+    marginBottom: PROFILE_GRID_ROW_GAP,
+  },
+  gridItem: {
+    width: PROFILE_CARD_WIDTH,
+    height: PROFILE_CARD_HEIGHT,
+    borderRadius: 12,
+    overflow: 'hidden',
+    backgroundColor: '#e8e8e8',
+  },
   gridImage: { width: '100%', height: '100%' },
   empty: { padding: 40, alignItems: 'center' },
-  emptyText: { fontSize: 16, color: '#888' },
-  modalOverlay: { flex: 1, justifyContent: 'flex-end', backgroundColor: 'rgba(0,0,0,0.3)' },
-  modalBackdrop: { flex: 1 },
-  modalSheet: {
-    backgroundColor: '#fff', borderTopLeftRadius: 20, borderTopRightRadius: 20,
-    maxHeight: '70%', paddingBottom: 32,
-  },
-  handle: { width: 36, height: 4, borderRadius: 2, backgroundColor: '#ddd', alignSelf: 'center', marginTop: 10, marginBottom: 4 },
-  modalTitle: { fontSize: 15, fontWeight: '700', textAlign: 'center', paddingVertical: 12, color: '#1a1a1a' },
-  listContent: { paddingHorizontal: 16 },
-  emptyList: { textAlign: 'center', color: '#aaa', marginTop: 24 },
-  userRow: { flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 10, borderBottomWidth: 1, borderBottomColor: '#f0f0f0' },
-  userAvatar: { width: 42, height: 42, borderRadius: 21, backgroundColor: '#e0e0e0', alignItems: 'center', justifyContent: 'center', overflow: 'hidden' },
-  userAvatarImg: { width: 42, height: 42 },
-  userAvatarInitial: { fontSize: 16, fontWeight: '600', color: '#888' },
-  userUsername: { fontSize: 14, fontWeight: '600', color: '#1a1a1a' },
+  emptyText: { fontSize: 16, color: '#fff' },
 });

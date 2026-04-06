@@ -10,7 +10,7 @@ import { supabase } from './src/lib/supabase';
 import LoginScreen from './src/screens/auth/LoginScreen';
 import SignUpScreen from './src/screens/auth/SignUpScreen';
 import FeedScreen from './src/screens/tabs/FeedScreen';
-import DiscoverScreen from './src/screens/tabs/DiscoverScreen';
+import RadarScreen from './src/screens/tabs/RadarScreen';
 import PostScreen from './src/screens/tabs/PostScreen';
 import MessagesScreen from './src/screens/tabs/MessagesScreen';
 import ConversationScreen from './src/screens/tabs/ConversationScreen';
@@ -31,8 +31,8 @@ const MsgStack = createNativeStackNavigator();
 
 function TabIcon({ label }: { label: string }) {
   const icons: Record<string, string> = {
-    Feed: '🏠', Discover: '🔍', Post: '➕',
-    Messages: '💬', Notifications: '🔔', Profile: '👤',
+    Feed: '🏠', Radar: '🧭', Post: '➕',
+    Messages: '💬', Profile: '👤',
   };
   return <Text style={{ fontSize: 20 }}>{icons[label] ?? '•'}</Text>;
 }
@@ -76,7 +76,7 @@ function MainTabs() {
       })}
     >
       <Tab.Screen name="Feed" component={FeedScreen} />
-      <Tab.Screen name="Discover" component={DiscoverScreen} />
+      <Tab.Screen name="Radar" component={RadarScreen} options={{ title: 'Radar' }} />
       <Tab.Screen name="Post" component={PostScreen} />
       <Tab.Screen
         name="Messages"
@@ -86,8 +86,7 @@ function MainTabs() {
           tabPress: () => navigation.navigate('Messages', { screen: 'MessagesList' }),
         })}
       />
-      <Tab.Screen name="Notifications" component={NotificationsScreen} />
-      <Tab.Screen name="Profile" component={ProfileScreen} />
+      <Tab.Screen name="Profile" component={ProfileScreen} options={{ headerShown: false }} />
     </Tab.Navigator>
   );
 }
@@ -103,7 +102,8 @@ function MainApp() {
       }}
     >
       <RootStack.Screen name="MainTabs" component={MainTabs} options={{ headerShown: false }} />
-      <RootStack.Screen name="UserProfile" component={UserProfileScreen} options={{ title: '' }} />
+      <RootStack.Screen name="Notifications" component={NotificationsScreen} options={{ title: 'Notifications' }} />
+      <RootStack.Screen name="UserProfile" component={UserProfileScreen} options={{ headerShown: false }} />
       <RootStack.Screen name="PostDetail" component={PostDetailScreen} options={{ title: 'Post' }} />
       <RootStack.Screen name="EditProfile" component={EditProfileScreen} options={{ title: 'Edit Profile' }} />
       <RootStack.Screen name="EditPost" component={EditPostScreen} options={{ title: 'Edit Post' }} />

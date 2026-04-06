@@ -23,6 +23,11 @@ import { decode } from 'base64-arraybuffer';
 import { useNavigation } from '@react-navigation/native';
 import { useHeaderHeight } from '@react-navigation/elements';
 import { supabase } from '../../lib/supabase';
+import {
+  formatNominatimSuggestionLabel,
+  fetchNominatimSearch,
+  normalizeNominatimSearchQuery,
+} from '../../lib/nominatim';
 
 const SCREEN_WIDTH = Dimensions.get('window').width;
 const PAGE_WIDTH = SCREEN_WIDTH - 40;
@@ -425,32 +430,18 @@ export default function PostScreen() {
     }
   }
 
-  function formatNominatimAddress(r: any): string {
-    const addr = r.address ?? {};
-    const parts: string[] = [];
-    const street = [addr.house_number, addr.road].filter(Boolean).join(' ');
-    if (street) parts.push(street);
-    const city = addr.city ?? addr.town ?? addr.village ?? addr.municipality;
-    if (city) parts.push(city);
-    if (addr.postcode) parts.push(addr.postcode);
-    if (addr.country) parts.push(addr.country);
-    return parts.join(', ') || r.display_name;
-  }
-
   function debouncedLocationSearch(q: string) {
     setLocationQuery(q);
     setLocationSuggestions([]);
     if (locationSearchTimeout.current) clearTimeout(locationSearchTimeout.current);
     if (!q.trim()) return;
+    const qNormalized = normalizeNominatimSearchQuery(q);
+    if (!qNormalized) return;
     locationSearchTimeout.current = setTimeout(async () => {
       setLocationSearching(true);
       try {
-        const res = await fetch(
-          `https://nominatim.openstreetmap.org/search?format=json&addressdetails=1&q=${encodeURIComponent(q)}&limit=5`,
-          { headers: { 'User-Agent': 'SlowMeterApp/1.0' } }
-        );
-        const data = await res.json();
-        setLocationSuggestions(data.map((r: any) => ({ name: formatNominatimAddress(r), lat: parseFloat(r.lat), lon: parseFloat(r.lon) })));
+        const data = await fetchNominatimSearch({ q, limit: 10 });
+        setLocationSuggestions(data.map((r: any) => ({ name: formatNominatimSuggestionLabel(r), lat: parseFloat(r.lat), lon: parseFloat(r.lon) })));
       } catch { /* ignore */ }
       setLocationSearching(false);
     }, 500);

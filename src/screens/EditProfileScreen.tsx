@@ -13,6 +13,7 @@ import {
   ActivityIndicator,
   Dimensions,
 } from 'react-native';
+import { LinearGradient } from 'expo-linear-gradient';
 
 const SCREEN_WIDTH = Dimensions.get('window').width;
 import * as ImagePicker from 'expo-image-picker';
@@ -68,8 +69,9 @@ export default function EditProfileScreen() {
     const result = await ImagePicker.launchImageLibraryAsync({
       mediaTypes: ['images'],
       quality: 0.85,
-      allowsEditing: true,
-      aspect: [3, 1],
+      // Use an in-app preview instead of the platform crop UI so the user sees
+      // how the full profile background will look.
+      allowsEditing: false,
     });
     if (!result.canceled) setNewCoverUri(result.assets[0].uri);
   }
@@ -131,27 +133,81 @@ export default function EditProfileScreen() {
 
   const displayAvatar = newAvatarUri ?? avatarUrl;
   const displayCover = newCoverUri ?? coverUrl;
+  const previewName = displayName.trim() || username.trim() || 'Your Name';
+  const previewUsername = username.trim() || 'username';
 
   return (
-    <KeyboardAvoidingView style={{ flex: 1 }} behavior="padding">
+    <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
       <ScrollView style={styles.container} contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
 
-        {/* Cover image */}
+        {/* Full profile background preview */}
         <TouchableOpacity style={styles.coverWrap} onPress={pickCover} activeOpacity={0.85}>
           {displayCover ? (
             <Image source={{ uri: displayCover }} style={styles.coverImage} resizeMode="cover" />
           ) : (
             <View style={styles.coverPlaceholder}>
               <Text style={styles.coverPlaceholderIcon}>🖼</Text>
-              <Text style={styles.coverPlaceholderText}>Add cover image</Text>
+              <Text style={styles.coverPlaceholderText}>Choose profile background</Text>
             </View>
           )}
+          <LinearGradient
+            colors={['rgba(0,0,0,0.12)', 'rgba(0,0,0,0.4)', 'rgba(0,0,0,0.78)']}
+            start={{ x: 0.5, y: 0 }}
+            end={{ x: 0.5, y: 1 }}
+            style={StyleSheet.absoluteFill}
+          />
+          <View style={styles.coverPreviewContent}>
+            <View style={styles.previewIdentityRow}>
+              <View style={styles.previewAvatarWrap}>
+                {displayAvatar ? (
+                  <Image source={{ uri: displayAvatar }} style={styles.previewAvatar} />
+                ) : (
+                  <Text style={styles.previewAvatarInitial}>{previewUsername[0]?.toUpperCase() ?? '?'}</Text>
+                )}
+              </View>
+              <View style={styles.previewNameBlock}>
+                <Text style={styles.previewDisplayName} numberOfLines={1}>
+                  {previewName}
+                </Text>
+                <Text style={styles.previewUsername} numberOfLines={1}>
+                  @{previewUsername}
+                </Text>
+              </View>
+            </View>
+
+            <View style={styles.previewActionRow}>
+              <View style={styles.previewPrimaryButton}>
+                <Text style={styles.previewPrimaryButtonText}>Edit Profile</Text>
+              </View>
+              <View style={styles.previewGhostButton}>
+                <Text style={styles.previewGhostButtonText}>•••</Text>
+              </View>
+            </View>
+
+            <View style={styles.previewStatsRow}>
+              <View style={styles.previewStat}>
+                <Text style={styles.previewStatValue}>0</Text>
+                <Text style={styles.previewStatLabel}>Posts</Text>
+              </View>
+              <View style={styles.previewStat}>
+                <Text style={styles.previewStatValue}>0</Text>
+                <Text style={styles.previewStatLabel}>Links</Text>
+              </View>
+            </View>
+
+            <View style={styles.previewBioCard}>
+              <Text style={styles.previewBioText}>
+                {bio.trim() || 'This preview shows how your profile background will look behind the page content.'}
+              </Text>
+            </View>
+          </View>
           <View style={styles.coverEditBadge}>
-            <Text style={styles.coverEditBadgeText}>Edit cover</Text>
+            <Text style={styles.coverEditBadgeText}>Change background</Text>
           </View>
         </TouchableOpacity>
+        <Text style={styles.previewHint}>Background preview for the full profile page</Text>
 
-        {/* Avatar — overlaps bottom of cover */}
+        {/* Avatar editor */}
         <TouchableOpacity style={styles.avatarWrap} onPress={pickAvatar}>
           {displayAvatar ? (
             <Image source={{ uri: displayAvatar }} style={styles.avatar} />
@@ -207,8 +263,10 @@ const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#fafaf8' },
   content: { paddingBottom: 40, alignItems: 'center' },
   coverWrap: {
-    width: SCREEN_WIDTH, height: SCREEN_WIDTH / 3,
-    backgroundColor: '#e0e0e0', marginBottom: 54,
+    width: SCREEN_WIDTH,
+    height: Math.round(SCREEN_WIDTH * 1.36),
+    backgroundColor: '#e0e0e0',
+    marginBottom: 10,
     position: 'relative',
   },
   coverImage: { width: '100%', height: '100%' },
@@ -217,13 +275,118 @@ const styles = StyleSheet.create({
   },
   coverPlaceholderIcon: { fontSize: 28, color: '#bbb' },
   coverPlaceholderText: { fontSize: 13, color: '#bbb', fontWeight: '500' },
+  coverPreviewContent: {
+    position: 'absolute',
+    left: 16,
+    right: 16,
+    bottom: 16,
+    gap: 12,
+  },
+  previewIdentityRow: {
+    flexDirection: 'row',
+    justifyContent: 'center',
+    alignItems: 'center',
+    gap: 12,
+  },
+  previewAvatarWrap: {
+    width: 74,
+    height: 74,
+    borderRadius: 37,
+    backgroundColor: 'rgba(255,255,255,0.2)',
+    borderWidth: 2,
+    borderColor: 'rgba(255,255,255,0.7)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    overflow: 'hidden',
+  },
+  previewAvatar: { width: '100%', height: '100%' },
+  previewAvatarInitial: { fontSize: 30, fontWeight: '700', color: '#fff' },
+  previewNameBlock: { maxWidth: '72%', alignItems: 'center' },
+  previewDisplayName: {
+    color: '#fff',
+    fontSize: 34,
+    lineHeight: 38,
+    fontWeight: '700',
+    textAlign: 'center',
+    letterSpacing: -0.6,
+  },
+  previewUsername: {
+    color: 'rgba(255,255,255,0.86)',
+    fontSize: 18,
+    marginTop: 2,
+    fontWeight: '500',
+    textAlign: 'center',
+  },
+  previewActionRow: {
+    flexDirection: 'row',
+    gap: 10,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  previewPrimaryButton: {
+    flex: 1,
+    minHeight: 44,
+    borderRadius: 999,
+    backgroundColor: '#fff',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  previewPrimaryButtonText: {
+    color: '#1a1a1a',
+    fontSize: 15,
+    fontWeight: '700',
+  },
+  previewGhostButton: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.55)',
+    backgroundColor: 'rgba(255,255,255,0.18)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  previewGhostButtonText: {
+    color: '#fff',
+    fontSize: 16,
+    fontWeight: '700',
+    letterSpacing: 1,
+  },
+  previewStatsRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    backgroundColor: 'rgba(9,9,10,0.28)',
+    borderRadius: 16,
+    paddingHorizontal: 12,
+    paddingVertical: 12,
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.2)',
+  },
+  previewStat: { flex: 1, alignItems: 'center' },
+  previewStatValue: { color: '#fff', fontSize: 28, lineHeight: 32, fontWeight: '700' },
+  previewStatLabel: { color: 'rgba(255,255,255,0.84)', fontSize: 13, marginTop: 2 },
+  previewBioCard: {
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.26)',
+    backgroundColor: 'rgba(15,15,16,0.36)',
+    paddingHorizontal: 12,
+    paddingVertical: 11,
+  },
+  previewBioText: { color: 'rgba(255,255,255,0.92)', fontSize: 15, lineHeight: 21 },
   coverEditBadge: {
     position: 'absolute', bottom: 8, right: 12,
     backgroundColor: 'rgba(0,0,0,0.45)', borderRadius: 12,
     paddingHorizontal: 10, paddingVertical: 4,
   },
   coverEditBadgeText: { color: '#fff', fontSize: 12, fontWeight: '600' },
-  avatarWrap: { marginTop: -90, marginBottom: 20, alignItems: 'center' },
+  previewHint: {
+    width: SCREEN_WIDTH - 48,
+    color: '#666',
+    fontSize: 13,
+    marginBottom: 16,
+  },
+  avatarWrap: { marginTop: 0, marginBottom: 20, alignItems: 'center' },
   avatar: { width: 100, height: 100, borderRadius: 50 },
   avatarPlaceholder: {
     width: 100, height: 100, borderRadius: 50,
