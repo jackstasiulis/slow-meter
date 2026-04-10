@@ -1,19 +1,8 @@
 import React, { useEffect, useState, useRef } from 'react';
-import {
-  View,
-  Text,
-  Image,
-  TextInput,
-  TouchableOpacity,
-  FlatList,
-  StyleSheet,
-  Modal,
-  KeyboardAvoidingView,
-  Platform,
-  ActivityIndicator,
-  Alert,
-} from 'react-native';
+import { View, Text, TextInput, TouchableOpacity, FlatList, StyleSheet, Modal, KeyboardAvoidingView, Platform, ActivityIndicator, Alert } from 'react-native';
+import { Image } from 'expo-image';
 import { useNavigation } from '@react-navigation/native';
+import { navigateToUserProfile } from '../navigation/navigateToUserProfile';
 import { supabase } from '../lib/supabase';
 import { Post } from '../types';
 
@@ -130,6 +119,7 @@ export default function CommentsSheet({ post, onClose }: Props) {
             <FlatList
               data={comments}
               keyExtractor={(item) => item.id}
+              showsVerticalScrollIndicator={false}
               contentContainerStyle={styles.list}
               keyboardShouldPersistTaps="handled"
               ListEmptyComponent={
@@ -137,7 +127,7 @@ export default function CommentsSheet({ post, onClose }: Props) {
               }
               renderItem={({ item }) => (
                 <View style={styles.commentRow}>
-                  <TouchableOpacity onPress={() => { onClose(); navigation.navigate('UserProfile', { userId: item.user?.id }); }}>
+                  <TouchableOpacity onPress={() => { onClose(); item.user?.id && navigateToUserProfile(navigation, item.user.id); }}>
                     <View style={styles.avatar}>
                       {item.user?.avatar_url ? (
                         <Image source={{ uri: item.user.avatar_url }} style={styles.avatarImg} />
@@ -148,7 +138,7 @@ export default function CommentsSheet({ post, onClose }: Props) {
                   </TouchableOpacity>
                   <View style={styles.commentContent}>
                     <View style={styles.commentHeader}>
-                      <TouchableOpacity onPress={() => { onClose(); navigation.navigate('UserProfile', { userId: item.user?.id }); }}>
+                      <TouchableOpacity onPress={() => { onClose(); item.user?.id && navigateToUserProfile(navigation, item.user.id); }}>
                         <Text style={styles.commentUsername}>@{item.user?.username}</Text>
                       </TouchableOpacity>
                       <Text style={styles.commentTime}>{timeAgo(item.created_at)}</Text>

@@ -1,19 +1,9 @@
 import React, { useState, useCallback } from 'react';
-import {
-  View,
-  Text,
-  TextInput,
-  FlatList,
-  TouchableOpacity,
-  TouchableWithoutFeedback,
-  Image,
-  StyleSheet,
-  Dimensions,
-  ActivityIndicator,
-  Keyboard,
-} from 'react-native';
+import { View, Text, TextInput, FlatList, TouchableOpacity, TouchableWithoutFeedback, StyleSheet, Dimensions, ActivityIndicator, Keyboard } from 'react-native';
+import { Image } from 'expo-image';
 import { useNavigation } from '@react-navigation/native';
 import { supabase } from '../../lib/supabase';
+import { navigateToUserProfile } from '../../navigation/navigateToUserProfile';
 
 const ITEM_SIZE = Dimensions.get('window').width / 3;
 
@@ -142,11 +132,12 @@ export default function DiscoverScreen() {
             <FlatList
               data={searchResults}
               keyExtractor={(item) => item.id}
+              showsVerticalScrollIndicator={false}
               contentContainerStyle={styles.searchList}
               keyboardShouldPersistTaps="handled"
               ListEmptyComponent={<Text style={styles.empty}>No users found</Text>}
               renderItem={({ item }) => (
-                <TouchableOpacity style={styles.userRow} onPress={() => navigation.navigate('UserProfile', { userId: item.id })}>
+                <TouchableOpacity style={styles.userRow} onPress={() => navigateToUserProfile(navigation, item.id)}>
                   <View style={styles.userAvatar}>
                     {item.avatar_url ? (
                       <Image source={{ uri: item.avatar_url }} style={styles.avatarImg} />
@@ -189,6 +180,7 @@ export default function DiscoverScreen() {
             data={discoverPosts}
             numColumns={3}
             keyExtractor={(item) => item.id}
+            showsVerticalScrollIndicator={false}
             renderItem={({ item }) => (
               <Image source={{ uri: item.media_url }} style={styles.gridImage} />
             )}

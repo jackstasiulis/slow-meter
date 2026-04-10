@@ -1,13 +1,11 @@
 import React from 'react';
+import { Animated, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { Image } from 'expo-image';
 import {
-  Animated,
-  Image,
-  StyleSheet,
-  Text,
-  TouchableOpacity,
-  View,
-} from 'react-native';
-import { PROFILE_HERO_HEIGHT } from './constants';
+  PROFILE_HERO_HEIGHT,
+  PROFILE_HERO_INNER_TOP_PAD,
+  PROFILE_HERO_MARGIN_BOTTOM,
+} from './constants';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 type ProfileStat = {
@@ -65,7 +63,7 @@ export default function ProfileHeroHeader({
         </Animated.View>
       ) : null}
 
-      <View style={[styles.heroContent, { paddingTop: insets.top + 96 }]}>
+      <View style={[styles.heroContent, { paddingTop: insets.top + PROFILE_HERO_INNER_TOP_PAD }]}>
         <View style={styles.identityRow}>
           <View style={styles.avatarWrap}>
             {avatarUrl ? (
@@ -117,7 +115,7 @@ const styles = StyleSheet.create({
   headerRoot: {
     minHeight: PROFILE_HERO_HEIGHT,
     justifyContent: 'flex-end',
-    marginBottom: 14,
+    marginBottom: PROFILE_HERO_MARGIN_BOTTOM,
   },
   overflowBtnWrap: {
     position: 'absolute',
@@ -125,9 +123,9 @@ const styles = StyleSheet.create({
     zIndex: 5,
   },
   overflowBtn: {
-    width: 42,
-    height: 42,
-    borderRadius: 21,
+    width: 36,
+    height: 36,
+    borderRadius: 18,
     alignItems: 'center',
     justifyContent: 'center',
     backgroundColor: 'rgba(255,255,255,0.2)',
@@ -136,10 +134,10 @@ const styles = StyleSheet.create({
   },
   overflowText: {
     color: '#fff',
-    fontSize: 18,
+    fontSize: 15,
     fontWeight: '700',
     marginTop: -1,
-    letterSpacing: 1,
+    letterSpacing: 0.5,
   },
   heroContent: {
     paddingHorizontal: 16,
@@ -193,16 +191,12 @@ const styles = StyleSheet.create({
     gap: 10,
     alignItems: 'center',
     justifyContent: 'center',
+    alignSelf: 'stretch',
   },
   statsRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
-    backgroundColor: 'rgba(9,9,10,0.28)',
-    borderRadius: 16,
-    paddingHorizontal: 12,
-    paddingVertical: 12,
-    borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.2)',
+    paddingVertical: 8,
   },
   statItem: {
     flex: 1,
@@ -210,8 +204,8 @@ const styles = StyleSheet.create({
   },
   statValue: {
     color: '#fff',
-    fontSize: 30,
-    lineHeight: 34,
+    fontSize: 23,
+    lineHeight: 27,
     fontWeight: '700',
   },
   statLabel: {

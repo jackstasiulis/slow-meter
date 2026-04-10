@@ -1,22 +1,8 @@
 import React, { useState, useEffect, useRef } from 'react';
-import {
-  View,
-  Text,
-  Image,
-  Animated,
-  TouchableOpacity,
-  StyleSheet,
-  Dimensions,
-  ScrollView,
-  Modal,
-  TextInput,
-  ActivityIndicator,
-  KeyboardAvoidingView,
-  Platform,
-  Alert,
-  PanResponder,
-} from 'react-native';
+import { View, Text, Animated, TouchableOpacity, StyleSheet, Dimensions, ScrollView, Modal, TextInput, ActivityIndicator, KeyboardAvoidingView, Platform, Alert, PanResponder, Image as RNImage } from 'react-native';
+import { Image } from 'expo-image';
 import { useNavigation } from '@react-navigation/native';
+import { navigateToUserProfile } from '../navigation/navigateToUserProfile';
 import { supabase } from '../lib/supabase';
 import { Post } from '../types';
 
@@ -64,7 +50,7 @@ export default function PostCard({ post, onCommentPress, onLikeToggle, onDelete,
   // Resolve the true aspect ratio of the cover image so the card sizes correctly
   useEffect(() => {
     if (!images[0]) return;
-    Image.getSize(
+    RNImage.getSize(
       images[0],
       (w, h) => { if (w > 0 && h > 0) setImageAspectRatio(w / h); },
       () => { /* keep default */ },
@@ -330,7 +316,7 @@ export default function PostCard({ post, onCommentPress, onLikeToggle, onDelete,
       <View style={styles.header}>
         <TouchableOpacity
           style={styles.headerLeft}
-          onPress={() => navigation.navigate('UserProfile', { userId: post.user_id })}
+          onPress={() => navigateToUserProfile(navigation, post.user_id)}
         >
           <View style={styles.avatarCircle}>
             {post.user?.avatar_url ? (
@@ -372,18 +358,19 @@ export default function PostCard({ post, onCommentPress, onLikeToggle, onDelete,
             horizontal
             pagingEnabled
             showsHorizontalScrollIndicator={false}
+            showsVerticalScrollIndicator={false}
             scrollEventThrottle={16}
             onScroll={(e) => setImageIndex(Math.round(e.nativeEvent.contentOffset.x / SCREEN_WIDTH))}
           >
             {images.map((url, i) => (
               <TouchableOpacity key={i} activeOpacity={1} onPress={handleImageTap}>
-                <Image source={{ uri: url }} style={[styles.image, { height: SCREEN_WIDTH / imageAspectRatio }]} resizeMode="cover" />
+                <Image source={{ uri: url }} style={[styles.image, { height: SCREEN_WIDTH / imageAspectRatio }]} contentFit="cover" />
               </TouchableOpacity>
             ))}
           </ScrollView>
         ) : (
           <TouchableOpacity activeOpacity={1} onPress={handleImageTap}>
-            <Image source={{ uri: images[0] }} style={[styles.image, { height: SCREEN_WIDTH / imageAspectRatio }]} resizeMode="cover" />
+            <Image source={{ uri: images[0] }} style={[styles.image, { height: SCREEN_WIDTH / imageAspectRatio }]} contentFit="cover" />
           </TouchableOpacity>
         )}
       </Animated.View>
@@ -427,7 +414,7 @@ export default function PostCard({ post, onCommentPress, onLikeToggle, onDelete,
 
       {post.caption ? (
         <View style={styles.captionRow}>
-          <TouchableOpacity onPress={() => navigation.navigate('UserProfile', { userId: post.user_id })}>
+          <TouchableOpacity onPress={() => navigateToUserProfile(navigation, post.user_id)}>
             <Text style={styles.captionUsername}>@{post.user?.username} </Text>
           </TouchableOpacity>
           <Text style={styles.caption}>{post.caption}</Text>
@@ -478,7 +465,7 @@ export default function PostCard({ post, onCommentPress, onLikeToggle, onDelete,
           <Image
             source={{ uri: images[imageIndex] }}
             style={{ width: '100%', height: '100%' }}
-            resizeMode="cover"
+            contentFit="cover"
           />
         </Animated.View>
       </Modal>
@@ -497,7 +484,7 @@ export default function PostCard({ post, onCommentPress, onLikeToggle, onDelete,
                 <TouchableOpacity
                   key={u.id}
                   style={styles.taggedUserRow}
-                  onPress={() => { setShowTaggedModal(false); navigation.navigate('UserProfile', { userId: u.id }); }}
+                  onPress={() => { setShowTaggedModal(false); navigateToUserProfile(navigation, u.id); }}
                 >
                   <View style={styles.taggedAvatar}>
                     {u.avatar_url ? (
@@ -521,7 +508,7 @@ export default function PostCard({ post, onCommentPress, onLikeToggle, onDelete,
           <View style={styles.sheet}>
             <View style={styles.handle} />
             <Text style={styles.modalTitle}>Send Post</Text>
-            <ScrollView style={{ maxHeight: 320 }} keyboardShouldPersistTaps="handled">
+            <ScrollView style={{ maxHeight: 320 }} keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false}>
               {/* Quick-pick existing conversations */}
               {sendQuery.trim().length === 0 && (
                 loadingConvs ? (

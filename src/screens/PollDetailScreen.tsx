@@ -1,15 +1,9 @@
 import React, { useState, useEffect } from 'react';
-import {
-  View,
-  Text,
-  ScrollView,
-  StyleSheet,
-  Image,
-  ActivityIndicator,
-  TouchableOpacity,
-} from 'react-native';
+import { View, Text, ScrollView, StyleSheet, ActivityIndicator, TouchableOpacity } from 'react-native';
+import { Image } from 'expo-image';
 import { useRoute, useNavigation } from '@react-navigation/native';
 import { supabase } from '../lib/supabase';
+import { navigateToUserProfile } from '../navigation/navigateToUserProfile';
 
 type Voter = { id: string; username: string; avatar_url: string | null };
 
@@ -74,7 +68,7 @@ export default function PollDetailScreen() {
   if (loading) return <ActivityIndicator style={{ flex: 1 }} color="#1a1a1a" />;
 
   return (
-    <ScrollView style={styles.container} contentContainerStyle={styles.content}>
+    <ScrollView style={styles.container} contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
       <Text style={styles.question}>{question}</Text>
       <Text style={styles.total}>{totalVotes} vote{totalVotes !== 1 ? 's' : ''} total</Text>
 
@@ -95,7 +89,7 @@ export default function PollDetailScreen() {
                   <TouchableOpacity
                     key={v.id}
                     style={styles.voterRow}
-                    onPress={() => navigation.navigate('UserProfile', { userId: v.id })}
+                    onPress={() => navigateToUserProfile(navigation, v.id)}
                   >
                     <View style={styles.voterAvatar}>
                       {v.avatar_url ? (

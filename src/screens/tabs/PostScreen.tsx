@@ -1,27 +1,13 @@
 import React, { useState, useRef, useEffect, useMemo } from 'react';
-import {
-  View,
-  Text,
-  TextInput,
-  TouchableOpacity,
-  Image,
-  StyleSheet,
-  Alert,
-  ActivityIndicator,
-  ScrollView,
-  KeyboardAvoidingView,
-  Platform,
-  Dimensions,
-  PixelRatio,
-  Animated,
-  PanResponder,
-} from 'react-native';
+import { View, Text, TextInput, TouchableOpacity, StyleSheet, Alert, ActivityIndicator, ScrollView, KeyboardAvoidingView, Platform, Dimensions, PixelRatio, Animated, PanResponder, Image as RNImage } from 'react-native';
+import { Image } from 'expo-image';
 import * as ImagePicker from 'expo-image-picker';
 import * as ImageManipulator from 'expo-image-manipulator';
 import * as FileSystem from 'expo-file-system/legacy';
 import { decode } from 'base64-arraybuffer';
 import { useNavigation } from '@react-navigation/native';
 import { useHeaderHeight } from '@react-navigation/elements';
+import { useBottomTabBarHeight } from '@react-navigation/bottom-tabs';
 import { supabase } from '../../lib/supabase';
 import {
   formatNominatimSuggestionLabel,
@@ -38,6 +24,7 @@ type CropState = { scale: number; panX: number; panY: number };
 export default function PostScreen() {
   const navigation = useNavigation<any>();
   const headerHeight = useHeaderHeight();
+  const tabBarHeight = useBottomTabBarHeight();
   const [images, setImages] = useState<string[]>([]);
   // Original dimensions kept so we can compute crop bounds
   const [imageDims, setImageDims] = useState<{ width: number; height: number }[]>([]);
@@ -338,7 +325,7 @@ export default function PostScreen() {
 
   // Crop a URI to the selected ratio, honouring the user's pinch-zoom / pan crop choice.
   // Preview layout uses dp; picker reports image size in pixels — we must use layout pixels
-  // (dp × PixelRatio) for the same math RN Image uses with resizeMode="cover", or the
+  // (dp × PixelRatio) for the same math RN Image uses with contentFit="cover", or the
   // exported crop is tighter (extra zoom) than what you see on screen.
   async function cropImage(
     uri: string,
@@ -359,7 +346,7 @@ export default function PostScreen() {
 
     // Prefer dimensions that match how the file decodes (EXIF), fallback to picker dims
     const { w: W, h: H } = await new Promise<{ w: number; h: number }>((resolve, reject) => {
-      Image.getSize(uri, (w, h) => resolve({ w, h }), reject);
+      RNImage.getSize(uri, (w, h) => resolve({ w, h }), reject);
     }).catch(() => ({ w: originalWidth, h: originalHeight }));
 
     if (W <= 0 || H <= 0) {
@@ -402,7 +389,10 @@ export default function PostScreen() {
 
     const result = await ImageManipulator.manipulateAsync(
       uri,
-      [{ crop: { originX: cropX, originY: cropY, width: cropW, height: cropH } }],
+      [
+        { crop: { originX: cropX, originY: cropY, width: cropW, height: cropH } },
+        { resize: { width: 1080 } },
+      ],
       { compress: 0.85, format: ImageManipulator.SaveFormat.JPEG },
     );
     return result.uri;
@@ -561,7 +551,13 @@ export default function PostScreen() {
 
   return (
     <KeyboardAvoidingView style={{ flex: 1 }} behavior="padding" keyboardVerticalOffset={headerHeight}>
-      <ScrollView ref={pageScrollR} style={styles.container} contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
+      <ScrollView
+        ref={pageScrollR}
+        style={styles.container}
+        contentContainerStyle={[styles.content, { paddingBottom: tabBarHeight + 20 }]}
+        keyboardShouldPersistTaps="handled"
+        showsVerticalScrollIndicator={false}
+      >
 
         {/* Cancel bar — always visible */}
         <TouchableOpacity style={styles.cancelBar} onPress={handleCancel}>
@@ -607,7 +603,7 @@ export default function PostScreen() {
                 {images.length === 1 ? (
                   // ── Single image: no horizontal scroll ──
                   <Animated.View style={{ position: 'absolute', width: animW, height: animH, left: animL, top: animT }}>
-                    <Image source={{ uri: images[0] }} style={{ width: '100%', height: '100%' }} resizeMode="cover" />
+                    <Image source={{ uri: images[0] }} style={{ width: '100%', height: '100%' }} contentFit="cover" />
                   </Animated.View>
                 ) : (
                   // ── Multiple images: horizontal carousel ──
@@ -616,6 +612,7 @@ export default function PostScreen() {
                     horizontal
                     pagingEnabled
                     showsHorizontalScrollIndicator={false}
+                    showsVerticalScrollIndicator={false}
                     scrollEventThrottle={16}
                     onScroll={(e) =>
                       setCarouselIndex(Math.round(e.nativeEvent.contentOffset.x / PAGE_WIDTH))
@@ -628,11 +625,11 @@ export default function PostScreen() {
                         <View key={i} style={[slide, { overflow: 'hidden' }]}>
                           {i === carouselIndex ? (
                             <Animated.View style={{ position: 'absolute', width: animW, height: animH, left: animL, top: animT }}>
-                              <Image source={{ uri }} style={{ width: '100%', height: '100%' }} resizeMode="cover" />
+                              <Image source={{ uri }} style={{ width: '100%', height: '100%' }} contentFit="cover" />
                             </Animated.View>
                           ) : (
                             <View style={cropLayoutStyle(cs.scale, cs.panX, cs.panY)}>
-                              <Image source={{ uri }} style={{ width: '100%', height: '100%' }} resizeMode="cover" />
+                              <Image source={{ uri }} style={{ width: '100%', height: '100%' }} contentFit="cover" />
                             </View>
                           )}
                         </View>
@@ -722,7 +719,7 @@ export default function PostScreen() {
                       ]}
                     >
                       <View style={thumbPreviewInnerStyle(cs.scale, cs.panX, cs.panY, fit)}>
-                        <Image source={{ uri }} style={styles.thumbPreviewImage} resizeMode="cover" />
+                        <Image source={{ uri }} style={styles.thumbPreviewImage} contentFit="cover" />
                       </View>
                     </View>
                   </View>

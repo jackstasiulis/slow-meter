@@ -1,24 +1,10 @@
 import React, { useEffect, useState, useRef } from 'react';
-import {
-  View,
-  Text,
-  Image,
-  Animated,
-  ScrollView,
-  TouchableOpacity,
-  TextInput,
-  StyleSheet,
-  Dimensions,
-  ActivityIndicator,
-  KeyboardAvoidingView,
-  Platform,
-  Alert,
-  Modal,
-  PanResponder,
-} from 'react-native';
+import { View, Text, Animated, ScrollView, TouchableOpacity, TextInput, StyleSheet, Dimensions, ActivityIndicator, KeyboardAvoidingView, Platform, Alert, Modal, PanResponder, Image as RNImage } from 'react-native';
+import { Image } from 'expo-image';
 import { useRoute, useNavigation } from '@react-navigation/native';
 import { useHeaderHeight } from '@react-navigation/elements';
 import { supabase } from '../lib/supabase';
+import { navigateToUserProfile } from '../navigation/navigateToUserProfile';
 
 const SCREEN_WIDTH = Dimensions.get('window').width;
 
@@ -67,7 +53,7 @@ export default function PostDetailScreen() {
   const [imageAspectRatio, setImageAspectRatio] = useState<number>(1);
   useEffect(() => {
     if (!images[0]) return;
-    Image.getSize(
+    RNImage.getSize(
       images[0],
       (w, h) => { if (w > 0 && h > 0) setImageAspectRatio(w / h); },
       () => { /* keep default */ },
@@ -325,12 +311,16 @@ export default function PostDetailScreen() {
       behavior="padding"
       keyboardVerticalOffset={Platform.OS === 'ios' ? headerHeight : 0}
     >
-      <ScrollView keyboardShouldPersistTaps="handled" scrollEnabled={scrollEnabled}>
+      <ScrollView
+        keyboardShouldPersistTaps="handled"
+        scrollEnabled={scrollEnabled}
+        showsVerticalScrollIndicator={false}
+      >
         {/* Post header */}
         <View style={styles.header}>
           <TouchableOpacity
             style={styles.headerLeft}
-            onPress={() => navigation.navigate('UserProfile', { userId: post.user_id })}
+            onPress={() => navigateToUserProfile(navigation, post.user_id)}
           >
             <View style={styles.avatarCircle}>
               {post.user?.avatar_url ? (
@@ -369,18 +359,19 @@ export default function PostDetailScreen() {
               horizontal
               pagingEnabled
               showsHorizontalScrollIndicator={false}
+              showsVerticalScrollIndicator={false}
               scrollEventThrottle={16}
               onScroll={(e) => setImageIndex(Math.round(e.nativeEvent.contentOffset.x / SCREEN_WIDTH))}
             >
               {images.map((url: string, i: number) => (
                 <TouchableOpacity key={i} activeOpacity={1} onPress={handleImageTap}>
-                  <Image source={{ uri: url }} style={[styles.image, { height: SCREEN_WIDTH / imageAspectRatio }]} resizeMode="cover" />
+                  <Image source={{ uri: url }} style={[styles.image, { height: SCREEN_WIDTH / imageAspectRatio }]} contentFit="cover" />
                 </TouchableOpacity>
               ))}
             </ScrollView>
           ) : (
             <TouchableOpacity activeOpacity={1} onPress={handleImageTap}>
-              <Image source={{ uri: images[0] }} style={[styles.image, { height: SCREEN_WIDTH / imageAspectRatio }]} resizeMode="cover" />
+              <Image source={{ uri: images[0] }} style={[styles.image, { height: SCREEN_WIDTH / imageAspectRatio }]} contentFit="cover" />
             </TouchableOpacity>
           )}
         </Animated.View>
@@ -412,7 +403,7 @@ export default function PostDetailScreen() {
 
         {post.caption ? (
           <View style={styles.captionRow}>
-            <TouchableOpacity onPress={() => navigation.navigate('UserProfile', { userId: post.user_id })}>
+            <TouchableOpacity onPress={() => navigateToUserProfile(navigation, post.user_id)}>
               <Text style={styles.captionUsername}>@{post.user?.username} </Text>
             </TouchableOpacity>
             <Text style={styles.caption}>{post.caption}</Text>
@@ -428,7 +419,7 @@ export default function PostDetailScreen() {
         ) : (
           comments.map((c) => (
             <View key={c.id} style={styles.commentRow}>
-              <TouchableOpacity onPress={() => navigation.navigate('UserProfile', { userId: c.user?.id })}>
+              <TouchableOpacity onPress={() => c.user?.id && navigateToUserProfile(navigation, c.user.id)}>
                 <View style={styles.commentAvatar}>
                   {c.user?.avatar_url ? (
                     <Image source={{ uri: c.user.avatar_url }} style={styles.commentAvatarImg} />
@@ -439,7 +430,7 @@ export default function PostDetailScreen() {
               </TouchableOpacity>
               <View style={styles.commentContent}>
                 <View style={styles.commentHeader}>
-                  <TouchableOpacity onPress={() => navigation.navigate('UserProfile', { userId: c.user?.id })}>
+                  <TouchableOpacity onPress={() => c.user?.id && navigateToUserProfile(navigation, c.user.id)}>
                     <Text style={styles.commentUsername}>@{c.user?.username}</Text>
                   </TouchableOpacity>
                   <Text style={styles.commentTime}>{timeAgo(c.created_at)}</Text>
@@ -534,7 +525,7 @@ export default function PostDetailScreen() {
           <Image
             source={{ uri: images[imageIndex] }}
             style={{ width: '100%', height: '100%' }}
-            resizeMode="cover"
+            contentFit="cover"
           />
         </Animated.View>
       </Modal>
@@ -561,7 +552,7 @@ export default function PostDetailScreen() {
             {sendSearching ? (
               <ActivityIndicator color="#1a1a1a" style={{ marginTop: 16 }} />
             ) : (
-              <ScrollView style={{ maxHeight: 250 }} keyboardShouldPersistTaps="handled">
+              <ScrollView style={{ maxHeight: 250 }} keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false}>
                 {sendResults.map((u) => (
                   <TouchableOpacity
                     key={u.id}

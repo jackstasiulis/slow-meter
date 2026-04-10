@@ -14,10 +14,6 @@ export function parseRadarEventDate(dateStr: string): Date | null {
   const year = new Date().getFullYear();
   const attempt = new Date(`${stripped}, ${year}`);
   if (!isNaN(attempt.getTime())) {
-    if (attempt.getTime() < Date.now() - 60 * 24 * 60 * 60 * 1000) {
-      const next = new Date(`${stripped}, ${year + 1}`);
-      if (!isNaN(next.getTime())) return next;
-    }
     return attempt;
   }
 

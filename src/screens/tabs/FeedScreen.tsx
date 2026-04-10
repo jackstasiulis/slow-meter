@@ -10,10 +10,13 @@ import {
   TouchableOpacity,
 } from 'react-native';
 import { useFocusEffect, useNavigation } from '@react-navigation/native';
+import { useBottomTabBarHeight } from '@react-navigation/bottom-tabs';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { BlurView } from 'expo-blur';
+import { LinearGradient } from 'expo-linear-gradient';
 import { supabase } from '../../lib/supabase';
 import { Post } from '../../types';
 import FeedMiniCard from '../../components/FeedMiniCard';
-import StoriesBar from '../../components/StoriesBar';
 
 const SCREEN_WIDTH = Dimensions.get('window').width;
 const SIDE_PAD = 12;
@@ -25,7 +28,62 @@ const DEFAULT_IMAGE_HEIGHT = Math.round(CARD_WIDTH * (4 / 3));
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#f0efed',
+    backgroundColor: '#08090a',
+  },
+  screenGradient: {
+    ...StyleSheet.absoluteFillObject,
+  },
+  topHeader: {
+    paddingHorizontal: 20,
+    paddingBottom: 12,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  topHeaderTitle: {
+    fontSize: 42,
+    fontWeight: '800',
+    color: '#fff',
+    letterSpacing: -0.9,
+  },
+  topHeaderAction: {
+    width: 42,
+    height: 42,
+    borderRadius: 21,
+    alignItems: 'center',
+    justifyContent: 'center',
+    overflow: 'hidden',
+    backgroundColor: 'rgba(255,255,255,0.14)',
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.34)',
+  },
+  topHeaderActionTint: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: 'rgba(255,255,255,0.08)',
+  },
+  topHeaderActionText: {
+    color: '#fff',
+    fontSize: 20,
+    fontWeight: '700',
+  },
+  topHeaderBadge: {
+    position: 'absolute',
+    top: -3,
+    right: -3,
+    minWidth: 18,
+    height: 18,
+    borderRadius: 9,
+    backgroundColor: '#c41e3a',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 4,
+    borderWidth: 1,
+    borderColor: '#08090a',
+  },
+  topHeaderBadgeText: {
+    color: '#fff',
+    fontSize: 10,
+    fontWeight: '700',
   },
   scroll: {
     flex: 1,
@@ -37,46 +95,6 @@ const styles = StyleSheet.create({
     flex: 1,
     alignItems: 'center',
     justifyContent: 'center',
-  },
-  storiesRow: {
-    flexDirection: 'row',
-    alignItems: 'flex-start',
-    backgroundColor: '#fff',
-    borderBottomWidth: 1,
-    borderBottomColor: '#eee',
-    marginBottom: 12,
-    paddingRight: 4,
-  },
-  storiesListWrap: {
-    flex: 1,
-    minWidth: 0,
-  },
-  notifButton: {
-    position: 'relative',
-    paddingHorizontal: 6,
-    paddingVertical: 12,
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  notifIcon: { fontSize: 22 },
-  notifBadge: {
-    position: 'absolute',
-    top: 6,
-    right: 2,
-    minWidth: 17,
-    height: 17,
-    borderRadius: 9,
-    backgroundColor: '#c41e3a',
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingHorizontal: 4,
-    borderWidth: 2,
-    borderColor: '#fff',
-  },
-  notifBadgeText: {
-    color: '#fff',
-    fontSize: 10,
-    fontWeight: '700',
   },
   columns: {
     flexDirection: 'row',
@@ -95,44 +113,14 @@ const styles = StyleSheet.create({
   emptyTitle: {
     fontSize: 17,
     fontWeight: '600',
-    color: '#1a1a1a',
+    color: '#fff',
   },
   emptySubtext: {
     fontSize: 14,
-    color: '#888',
+    color: 'rgba(255,255,255,0.66)',
     textAlign: 'center',
   },
 });
-
-function FeedStoriesHeader({
-  unreadCount,
-  onOpenNotifications,
-}: {
-  unreadCount: number;
-  onOpenNotifications: () => void;
-}) {
-  return (
-    <View style={styles.storiesRow}>
-      <View style={styles.storiesListWrap}>
-        <StoriesBar />
-      </View>
-      <TouchableOpacity
-        style={styles.notifButton}
-        onPress={onOpenNotifications}
-        accessibilityLabel="Notifications"
-      >
-        <Text style={styles.notifIcon}>🔔</Text>
-        {unreadCount > 0 ? (
-          <View style={styles.notifBadge}>
-            <Text style={styles.notifBadgeText}>
-              {unreadCount > 99 ? '99+' : String(unreadCount)}
-            </Text>
-          </View>
-        ) : null}
-      </TouchableOpacity>
-    </View>
-  );
-}
 
 // Greedy masonry split: each post goes to the shorter column
 function splitColumns(posts: Post[], heights: Record<string, number>): [Post[], Post[]] {
@@ -155,6 +143,8 @@ function splitColumns(posts: Post[], heights: Record<string, number>): [Post[], 
 
 export default function FeedScreen() {
   const navigation = useNavigation<any>();
+  const insets = useSafeAreaInsets();
+  const tabBarHeight = useBottomTabBarHeight();
   const [posts, setPosts] = useState<Post[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -270,15 +260,39 @@ export default function FeedScreen() {
 
   return (
     <View style={styles.container}>
-      <FeedStoriesHeader unreadCount={unreadNotifications} onOpenNotifications={openNotifications} />
+      <LinearGradient
+        colors={['rgba(255,255,255,0.08)', 'rgba(255,255,255,0.02)', 'rgba(0,0,0,0)']}
+        locations={[0, 0.34, 1]}
+        style={styles.screenGradient}
+        pointerEvents="none"
+      />
+      <View style={[styles.topHeader, { paddingTop: insets.top + 8 }]}>
+        <Text style={styles.topHeaderTitle}>slowletter</Text>
+        <TouchableOpacity
+          style={styles.topHeaderAction}
+          onPress={openNotifications}
+          accessibilityLabel="Open notifications"
+        >
+          <BlurView intensity={35} tint="dark" style={StyleSheet.absoluteFill} />
+          <View style={styles.topHeaderActionTint} />
+          <Text style={styles.topHeaderActionText}>↕</Text>
+          {unreadNotifications > 0 ? (
+            <View style={styles.topHeaderBadge}>
+              <Text style={styles.topHeaderBadgeText}>
+                {unreadNotifications > 99 ? '99+' : String(unreadNotifications)}
+              </Text>
+            </View>
+          ) : null}
+        </TouchableOpacity>
+      </View>
       {loading ? (
         <View style={styles.centered}>
-          <ActivityIndicator size="large" color="#1a1a1a" />
+          <ActivityIndicator size="large" color="#fff" />
         </View>
       ) : (
         <ScrollView
           style={styles.scroll}
-          contentContainerStyle={styles.contentContainer}
+          contentContainerStyle={[styles.contentContainer, { paddingBottom: tabBarHeight + 20 }]}
           showsVerticalScrollIndicator={false}
           refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} />}
         >

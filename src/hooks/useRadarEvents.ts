@@ -1,19 +1,33 @@
 import { useState, useCallback } from 'react';
 import { useFocusEffect } from '@react-navigation/native';
 import { supabase } from '../lib/supabase';
-import { RadarEvent } from '../types/radar';
+import { RadarEvent, RadarGoingPreview } from '../types/radar';
 import { parseRadarEventDate } from '../utils/radarEventDate';
+
+/** Match EventDetailScreen RSVP + any legacy rows */
+const GOING_STATUSES = ['going', 'yes'] as const;
+
+const MAX_GOING_FACE_PILE = 5;
 
 function isUpcoming(dateStr: string | null): boolean {
   // Events with no date shown in Upcoming (undated/open plans)
   if (!dateStr) return true;
   const eventDate = parseRadarEventDate(dateStr);
-  if (!eventDate) return true; // Unparseable — show rather than hide
+  if (!eventDate) return false;
   const today = new Date();
   today.setHours(0, 0, 0, 0);
   const horizon = new Date(today);
   horizon.setDate(today.getDate() + 30);
   return eventDate >= today && eventDate <= horizon;
+}
+
+function isPast(dateStr: string | null): boolean {
+  if (!dateStr) return false;
+  const eventDate = parseRadarEventDate(dateStr);
+  if (!eventDate) return false;
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  return eventDate < today;
 }
 
 function isLater(dateStr: string | null): boolean {
@@ -31,6 +45,7 @@ function isLater(dateStr: string | null): boolean {
 export function useRadarEvents(myId: string | null) {
   const [upcoming, setUpcoming] = useState<RadarEvent[]>([]);
   const [later, setLater] = useState<RadarEvent[]>([]);
+  const [past, setPast] = useState<RadarEvent[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
 
@@ -63,6 +78,7 @@ export function useRadarEvents(myId: string | null) {
       console.log('[RadarEvents] No conversations found for user', myId);
       setUpcoming([]);
       setLater([]);
+      setPast([]);
       setLoading(false);
       setRefreshing(false);
       return;
@@ -72,7 +88,7 @@ export function useRadarEvents(myId: string | null) {
     // because dates are stored as human-readable strings ("Friday, April 10"), not ISO
     const { data: eventsData, error: eventsError } = await supabase
       .from('events')
-      .select('id, title, date, time, location, location_lat, location_lng, image_url, conversation_id, created_by, created_at')
+      .select('id, title, date, time, location, image_url, conversation_id, created_by, created_at')
       .in('conversation_id', convIds)
       .order('created_at', { ascending: false });
 
@@ -81,30 +97,54 @@ export function useRadarEvents(myId: string | null) {
     if (!eventsData || eventsData.length === 0) {
       setUpcoming([]);
       setLater([]);
+      setPast([]);
       setLoading(false);
       setRefreshing(false);
       return;
     }
 
-    // Fetch group names
+    // Fetch group names and avatars
     const uniqueConvIds = [...new Set(eventsData.map((e: any) => e.conversation_id))];
     const { data: convData } = await supabase
       .from('conversations')
-      .select('id, name')
+      .select('id, name, avatar_url')
       .in('id', uniqueConvIds);
     const convMap: Record<string, string> = {};
-    for (const c of convData ?? []) convMap[c.id] = c.name;
+    const convImageMap: Record<string, string | null> = {};
+    for (const c of convData ?? []) {
+      convMap[c.id] = c.name;
+      convImageMap[c.id] = c.avatar_url ?? null;
+    }
 
-    // Fetch RSVP counts
     const eventIds = eventsData.map((e: any) => e.id);
-    const { data: rsvpData } = await supabase
+    const { data: rsvpRows } = await supabase
       .from('event_rsvps')
-      .select('event_id')
+      .select('event_id, user_id, user:users(avatar_url, username)')
       .in('event_id', eventIds)
-      .eq('status', 'yes');
+      .in('status', [...GOING_STATUSES]);
+
     const rsvpCounts: Record<string, number> = {};
-    for (const r of rsvpData ?? []) {
-      rsvpCounts[r.event_id] = (rsvpCounts[r.event_id] ?? 0) + 1;
+    const goingPreviewByEvent: Record<string, RadarGoingPreview[]> = {};
+
+    for (const row of rsvpRows ?? []) {
+      const eid = (row as { event_id: string }).event_id;
+      rsvpCounts[eid] = (rsvpCounts[eid] ?? 0) + 1;
+
+      const list = goingPreviewByEvent[eid] ?? [];
+      if (list.length >= MAX_GOING_FACE_PILE) continue;
+
+      const rawUser = (row as { user?: unknown }).user;
+      const u = (Array.isArray(rawUser) ? rawUser[0] : rawUser) as
+        | { avatar_url?: string | null; username?: string | null }
+        | null
+        | undefined;
+
+      list.push({
+        userId: (row as { user_id: string }).user_id,
+        avatarUrl: u?.avatar_url ?? null,
+        username: u?.username ?? '?',
+      });
+      goingPreviewByEvent[eid] = list;
     }
 
     const events: RadarEvent[] = eventsData.map((e: any) => ({
@@ -113,18 +153,21 @@ export function useRadarEvents(myId: string | null) {
       date: e.date ?? null,
       time: e.time ?? null,
       location: e.location ?? null,
-      locationLat: e.location_lat ?? null,
-      locationLng: e.location_lng ?? null,
+      locationLat: null,
+      locationLng: null,
       imageUrl: e.image_url ?? null,
       conversationId: e.conversation_id,
       groupName: convMap[e.conversation_id] ?? null,
+      groupImageUrl: convImageMap[e.conversation_id] ?? null,
       createdBy: e.created_by,
       createdAt: e.created_at,
       rsvpCount: rsvpCounts[e.id] ?? 0,
+      goingPreview: goingPreviewByEvent[e.id] ?? [],
     }));
 
     setUpcoming(events.filter((e) => isUpcoming(e.date)));
     setLater(events.filter((e) => isLater(e.date)));
+    setPast(events.filter((e) => isPast(e.date)));
     setLoading(false);
     setRefreshing(false);
   }, [myId]);
@@ -141,5 +184,5 @@ export function useRadarEvents(myId: string | null) {
     load();
   }, [load]);
 
-  return { upcoming, later, loading, refreshing, refresh };
+  return { upcoming, later, past, loading, refreshing, refresh };
 }

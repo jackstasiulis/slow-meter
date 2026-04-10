@@ -64,6 +64,7 @@ export default function SignUpScreen({ onSwitch }: Props) {
       <ScrollView
         contentContainerStyle={styles.container}
         keyboardShouldPersistTaps="handled"
+        showsVerticalScrollIndicator={false}
       >
         <Text style={styles.title}>slow meter</Text>
         <Text style={styles.subtitle}>join the quiet</Text>

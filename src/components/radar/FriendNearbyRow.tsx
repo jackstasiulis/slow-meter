@@ -48,6 +48,7 @@ export default function FriendNearbyRow({ friends, loading, isSharing, onFriendP
       horizontal
       nestedScrollEnabled
       showsHorizontalScrollIndicator={false}
+      showsVerticalScrollIndicator={false}
       keyboardShouldPersistTaps="handled"
       contentContainerStyle={styles.row}
     >

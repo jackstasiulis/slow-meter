@@ -1,18 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
-import {
-  View,
-  Text,
-  Image,
-  TouchableOpacity,
-  StyleSheet,
-  Animated,
-  Modal,
-  TextInput,
-  ScrollView,
-  KeyboardAvoidingView,
-  ActivityIndicator,
-  Platform,
-} from 'react-native';
+import { View, Text, TouchableOpacity, StyleSheet, Animated, Modal, TextInput, ScrollView, KeyboardAvoidingView, ActivityIndicator, Platform, Image as RNImage } from 'react-native';
+import { Image } from 'expo-image';
+import { LinearGradient } from 'expo-linear-gradient';
 import { useNavigation } from '@react-navigation/native';
 import { supabase } from '../lib/supabase';
 import { Post } from '../types';
@@ -79,7 +68,7 @@ export default function FeedMiniCard({ post, cardWidth, imageHeight, onLikeToggl
   // Classify image as square vs portrait slot only — never use raw pixel aspect (avoids huge cards)
   useEffect(() => {
     if (!coverImage) return;
-    Image.getSize(
+    RNImage.getSize(
       coverImage,
       (w, h) => {
         if (w > 0 && h > 0) {
@@ -246,6 +235,8 @@ export default function FeedMiniCard({ post, cardWidth, imageHeight, onLikeToggl
     return `${Math.floor(hrs / 24)}d`;
   }
 
+  const username = post.user?.username ?? 'unknown';
+
   return (
     <>
       <TouchableOpacity
@@ -255,13 +246,54 @@ export default function FeedMiniCard({ post, cardWidth, imageHeight, onLikeToggl
         onLongPress={handleLongPress}
         delayLongPress={380}
       >
-        {/* Cover image with heart burst overlay */}
+        {/* Cover image with bottom metadata overlay */}
         <View style={[styles.imageWrap, { height: resolvedImageHeight }]}>
           <Image
             source={{ uri: coverImage }}
             style={styles.image}
-            resizeMode="cover"
+            contentFit="cover"
           />
+          <LinearGradient
+            colors={['rgba(0,0,0,0)', 'rgba(0,0,0,0.74)']}
+            locations={[0.4, 1]}
+            style={styles.bottomGradient}
+            pointerEvents="none"
+          />
+          <View style={styles.bottomMeta}>
+            <View style={styles.userRow}>
+              <View style={styles.avatarWrap}>
+                {post.user?.avatar_url ? (
+                  <Image source={{ uri: post.user.avatar_url }} style={styles.avatar} />
+                ) : (
+                  <View style={styles.avatarFallback}>
+                    <Text style={styles.avatarInitial}>
+                      {username[0].toUpperCase()}
+                    </Text>
+                  </View>
+                )}
+              </View>
+              <View style={styles.userTextWrap}>
+                <Text style={styles.username} numberOfLines={1}>
+                  @{username}
+                </Text>
+                <Text style={styles.time}>{timeAgo(post.created_at)}</Text>
+              </View>
+            </View>
+            <View style={styles.actionsRow}>
+              <TouchableOpacity
+                style={styles.actionBtn}
+                onPress={(e) => { e.stopPropagation(); handleLike(); }}
+                hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+              >
+                <Text style={[styles.actionIcon, liked && styles.liked]}>{liked ? '♥' : '♡'}</Text>
+                <Text style={styles.actionCount}>{likeCount}</Text>
+              </TouchableOpacity>
+              <View style={styles.actionBtn}>
+                <Text style={styles.actionIcon}>💬</Text>
+                <Text style={styles.actionCount}>{post.comment_count}</Text>
+              </View>
+            </View>
+          </View>
           {images.length > 1 && (
             <View style={styles.multiIndicator}>
               <Text style={styles.multiIndicatorText}>+{images.length - 1}</Text>
@@ -276,46 +308,6 @@ export default function FeedMiniCard({ post, cardWidth, imageHeight, onLikeToggl
           >
             ♥
           </Animated.Text>
-        </View>
-
-        {/* Info area */}
-        <View style={styles.info}>
-          <View style={styles.userRow}>
-            <View style={styles.avatarWrap}>
-              {post.user?.avatar_url ? (
-                <Image source={{ uri: post.user.avatar_url }} style={styles.avatar} />
-              ) : (
-                <View style={styles.avatarFallback}>
-                  <Text style={styles.avatarInitial}>
-                    {(post.user?.username ?? '?')[0].toUpperCase()}
-                  </Text>
-                </View>
-              )}
-            </View>
-            <Text style={styles.username} numberOfLines={1}>
-              @{post.user?.username}
-            </Text>
-            <Text style={styles.time}>{timeAgo(post.created_at)}</Text>
-          </View>
-
-          {post.caption ? (
-            <Text style={styles.caption} numberOfLines={1}>{post.caption}</Text>
-          ) : null}
-
-          <View style={styles.actionsRow}>
-            <TouchableOpacity
-              style={styles.actionBtn}
-              onPress={(e) => { e.stopPropagation(); handleLike(); }}
-              hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-            >
-              <Text style={[styles.actionIcon, liked && styles.liked]}>{liked ? '♥' : '♡'}</Text>
-              <Text style={styles.actionCount}>{likeCount}</Text>
-            </TouchableOpacity>
-            <View style={styles.actionBtn}>
-              <Text style={styles.actionIcon}>💬</Text>
-              <Text style={styles.actionCount}>{post.comment_count}</Text>
-            </View>
-          </View>
         </View>
       </TouchableOpacity>
 
@@ -338,7 +330,7 @@ export default function FeedMiniCard({ post, cardWidth, imageHeight, onLikeToggl
           <View style={styles.sheet}>
             <View style={styles.handle} />
             <Text style={styles.sheetTitle}>Send Post</Text>
-            <ScrollView style={{ maxHeight: 320 }} keyboardShouldPersistTaps="handled">
+            <ScrollView style={{ maxHeight: 320 }} keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false}>
               {sendQuery.trim().length === 0 && (
                 loadingConvs ? (
                   <ActivityIndicator color="#1a1a1a" style={{ marginTop: 12 }} />
@@ -411,15 +403,10 @@ export default function FeedMiniCard({ post, cardWidth, imageHeight, onLikeToggl
 
 const styles = StyleSheet.create({
   card: {
-    backgroundColor: '#fff',
     borderRadius: 14,
     overflow: 'hidden',
     marginBottom: 10,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.07,
-    shadowRadius: 4,
-    elevation: 2,
+    backgroundColor: 'transparent',
   },
   imageWrap: {
     width: '100%',
@@ -428,6 +415,16 @@ const styles = StyleSheet.create({
   image: {
     width: '100%',
     height: '100%',
+  },
+  bottomGradient: {
+    ...StyleSheet.absoluteFillObject,
+  },
+  bottomMeta: {
+    position: 'absolute',
+    left: 8,
+    right: 8,
+    bottom: 8,
+    gap: 4,
   },
   heartBurst: {
     position: 'absolute',
@@ -438,65 +435,65 @@ const styles = StyleSheet.create({
   },
   multiIndicator: {
     position: 'absolute',
-    top: 7,
-    right: 7,
-    backgroundColor: 'rgba(0,0,0,0.5)',
-    borderRadius: 8,
-    paddingHorizontal: 6,
-    paddingVertical: 2,
+    top: 8,
+    right: 8,
+    backgroundColor: 'rgba(10,10,12,0.46)',
+    borderRadius: 999,
+    paddingHorizontal: 7,
+    paddingVertical: 3,
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.4)',
   },
   multiIndicatorText: {
     color: '#fff',
     fontSize: 10,
     fontWeight: '700',
   },
-  info: {
-    paddingHorizontal: 9,
-    paddingTop: 8,
-    paddingBottom: 9,
-    gap: 4,
-  },
   userRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 5,
+    gap: 6,
+    flex: 1,
+    minWidth: 0,
+  },
+  userTextWrap: {
+    flex: 1,
+    minWidth: 0,
   },
   avatarWrap: {
-    width: 20,
-    height: 20,
-    borderRadius: 10,
+    width: 24,
+    height: 24,
+    borderRadius: 12,
     overflow: 'hidden',
-    backgroundColor: '#e0e0e0',
+    backgroundColor: 'rgba(255,255,255,0.2)',
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.34)',
   },
-  avatar: { width: 20, height: 20 },
+  avatar: { width: 24, height: 24 },
   avatarFallback: {
     flex: 1,
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: '#d0d0d0',
+    backgroundColor: 'rgba(255,255,255,0.22)',
   },
-  avatarInitial: { fontSize: 9, fontWeight: '800', color: '#555' },
+  avatarInitial: { fontSize: 10, fontWeight: '800', color: 'rgba(255,255,255,0.95)' },
   username: {
-    flex: 1,
     fontSize: 11,
     fontWeight: '700',
-    color: '#1a1a1a',
+    color: '#fff',
+    lineHeight: 13,
   },
   time: {
     fontSize: 10,
-    color: '#aaa',
-    fontWeight: '500',
-  },
-  caption: {
-    fontSize: 11,
-    color: '#555',
-    lineHeight: 15,
+    color: 'rgba(255,255,255,0.82)',
+    fontWeight: '600',
+    marginTop: 1,
   },
   actionsRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 10,
-    marginTop: 2,
+    gap: 8,
+    marginLeft: 2,
   },
   actionBtn: {
     flexDirection: 'row',
@@ -504,13 +501,13 @@ const styles = StyleSheet.create({
     gap: 3,
   },
   actionIcon: {
-    fontSize: 13,
-    color: '#1a1a1a',
+    fontSize: 12,
+    color: '#fff',
   },
-  liked: { color: '#e0245e' },
+  liked: { color: '#ff8ea9' },
   actionCount: {
     fontSize: 11,
-    color: '#555',
+    color: '#fff',
     fontWeight: '600',
   },
   // Share modal

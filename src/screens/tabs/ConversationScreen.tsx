@@ -1,28 +1,28 @@
 import React, { useState, useEffect, useLayoutEffect, useRef, useCallback, useMemo } from 'react';
-import {
-  View,
-  Text,
-  FlatList,
-  ScrollView,
-  TextInput,
-  TouchableOpacity,
-  StyleSheet,
-  KeyboardAvoidingView,
-  Keyboard,
-  Platform,
-  ActivityIndicator,
-  Image,
-  Dimensions,
-  Modal,
-  Alert,
-  Switch,
-} from 'react-native';
+import { View, Text, FlatList, ScrollView, TextInput, TouchableOpacity, Pressable, StyleSheet, KeyboardAvoidingView, Keyboard, Platform, ActivityIndicator, Dimensions, Modal, Alert, Switch } from 'react-native';
+import { Image } from 'expo-image';
 import DateTimePicker from '@react-native-community/datetimepicker';
 import { useRoute, useNavigation, useFocusEffect } from '@react-navigation/native';
+import { HeaderBackButton } from '@react-navigation/elements';
+import { Ionicons } from '@expo/vector-icons';
+import { navigateToUserProfile } from '../../navigation/navigateToUserProfile';
 import { useHeaderHeight } from '@react-navigation/elements';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as ImagePicker from 'expo-image-picker';
+import * as ImageManipulator from 'expo-image-manipulator';
 import * as FileSystem from 'expo-file-system/legacy';
 import { decode } from 'base64-arraybuffer';
+import { BlurView } from 'expo-blur';
+import { LinearGradient } from 'expo-linear-gradient';
+import { StatusBar } from 'expo-status-bar';
+import Animated, {
+  runOnJS,
+  useAnimatedStyle,
+  useSharedValue,
+  withSpring,
+  withTiming,
+} from 'react-native-reanimated';
+import { Gesture, GestureDetector, GestureHandlerRootView } from 'react-native-gesture-handler';
 import { supabase } from '../../lib/supabase';
 import {
   formatNominatimSuggestionLabel,
@@ -38,6 +38,8 @@ import {
   formatAvailabilitySubtitle,
   summarizeAvailability,
 } from '../../lib/availability';
+import { useSignalMessagesChatDockOnBack } from '../../context/MessagesChatDockExitContext';
+import EventHeroCropModal from '../../components/event/EventHeroCropModal';
 import {
   AvailabilityCheck,
   AvailabilityDaypart,
@@ -49,6 +51,7 @@ import {
 } from '../../types';
 
 const SCREEN_WIDTH = Dimensions.get('window').width;
+const SCREEN_HEIGHT = Dimensions.get('window').height;
 const QUICK_PLAN_DETAILS_MAX_LEN = 120;
 const CHAT_INITIAL_MESSAGE_LIMIT = 350;
 
@@ -118,12 +121,23 @@ type Message = {
 
 const COMPOSER_ROW_MIN_HEIGHT = 56;
 const ACTION_MENU_BOTTOM_GAP = 8;
+/** Above home indicator / gesture bar when keyboard is closed (dock hidden in chat). */
+const COMPOSER_BOTTOM_INSET_EXTRA = 2;
 
 export default function ConversationScreen() {
   const headerHeight = useHeaderHeight();
+  const insets = useSafeAreaInsets();
   const route = useRoute<any>();
   const navigation = useNavigation<any>();
-  const { conversationId, otherUsername, otherUserId, isGroup, groupAvatarUrl: initialGroupAvatarUrl, groupName: initialGroupName } = route.params;
+  const { conversationId, otherUsername, otherUserId, isGroup, groupAvatarUrl: initialGroupAvatarUrl, groupName: initialGroupName, openEventModal } = route.params;
+  const signalDockOnChatBack = useSignalMessagesChatDockOnBack();
+
+  useEffect(() => {
+    const sub = navigation.addListener('beforeRemove', () => {
+      signalDockOnChatBack();
+    });
+    return sub;
+  }, [navigation, signalDockOnChatBack]);
 
   const [messages, setMessages] = useState<Message[]>([]);
   const [text, setText] = useState('');
@@ -145,42 +159,126 @@ export default function ConversationScreen() {
   const [groupCreatedBy, setGroupCreatedBy] = useState<string | null>(null);
   const [groupMembersList, setGroupMembersList] = useState<Sender[]>([]);
 
-  // Merge group avatar + member count into the navigation header so the in-view banner is not needed
+  const openGroupSettings = useCallback(() => {
+    setEditGroupName(groupName);
+    setNewGroupAvatarUri(null);
+    setShowGroupSettings(true);
+  }, [groupName]);
+
+  const groupSheetTranslateY = useSharedValue(0);
+
+  const closeGroupSettingsSheet = useCallback(() => {
+    setShowGroupSettings(false);
+  }, []);
+
+  useEffect(() => {
+    if (showGroupSettings) {
+      groupSheetTranslateY.value = 0;
+    }
+  }, [showGroupSettings, groupSheetTranslateY]);
+
+  const groupSheetPanGesture = useMemo(
+    () =>
+      Gesture.Pan()
+        .activeOffsetY(10)
+        .failOffsetY(-14)
+        .onUpdate((e) => {
+          'worklet';
+          const dy = e.translationY;
+          if (dy > 0) {
+            groupSheetTranslateY.value = dy;
+          } else {
+            groupSheetTranslateY.value = dy * 0.12;
+          }
+        })
+        .onEnd((e) => {
+          'worklet';
+          const y = groupSheetTranslateY.value;
+          const vy = e.velocityY;
+          if (y > 90 || vy > 800) {
+            groupSheetTranslateY.value = withTiming(SCREEN_HEIGHT, { duration: 240 }, (finished) => {
+              if (finished) {
+                runOnJS(closeGroupSettingsSheet)();
+              }
+            });
+          } else {
+            groupSheetTranslateY.value = withSpring(0, { damping: 26, stiffness: 280 });
+          }
+        }),
+    [closeGroupSettingsSheet, groupSheetTranslateY],
+  );
+
+  const groupSheetAnimatedStyle = useAnimatedStyle(() => ({
+    transform: [{ translateY: groupSheetTranslateY.value }],
+  }));
+
+  // Group chat: full-width bar (rounded top), inline back + avatar + title, ⋮ menu — matches Messages-style chrome
   useLayoutEffect(() => {
-    if (!isGroup) return;
+    if (!isGroup) {
+      navigation.setOptions({
+        title: `@${otherUsername ?? ''}`,
+        headerTitle: undefined,
+        headerLeft: undefined,
+        headerRight: undefined,
+        headerBackground: undefined,
+        headerStyle: undefined,
+        headerShadowVisible: undefined,
+        headerTintColor: undefined,
+      });
+      return;
+    }
     navigation.setOptions({
-      headerTitle: () => (
-        <TouchableOpacity
-          style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}
-          onPress={() => { setEditGroupName(groupName); setNewGroupAvatarUri(null); setShowGroupSettings(true); }}
-          activeOpacity={0.7}
-        >
-          <View style={styles.groupHeaderAvatar}>
-            {groupAvatarUrl ? (
-              <Image source={{ uri: groupAvatarUrl }} style={styles.groupHeaderAvatarImg} />
-            ) : (
-              <Text style={styles.groupHeaderAvatarIcon}>👥</Text>
-            )}
-          </View>
-          <View>
-            <Text style={styles.groupHeaderName}>{groupName}</Text>
-            {memberCount !== null && (
-              <Text style={styles.groupMemberCount}>{memberCount} members</Text>
-            )}
-          </View>
-        </TouchableOpacity>
+      title: '',
+      headerTitle: () => null,
+      headerTintColor: '#fff',
+      headerShadowVisible: false,
+      headerStyle: { backgroundColor: 'transparent' },
+      headerBackground: () => <View style={styles.groupHeaderBg} />,
+      headerLeft: () => (
+        <View style={styles.groupHeaderLeftRow}>
+          <HeaderBackButton
+            tintColor="#fff"
+            displayMode="minimal"
+            onPress={() => navigation.goBack()}
+          />
+          <TouchableOpacity
+            style={styles.groupHeaderTitlePressable}
+            onPress={openGroupSettings}
+            activeOpacity={0.75}
+          >
+            <View style={styles.groupHeaderAvatar}>
+              {groupAvatarUrl ? (
+                <Image source={{ uri: groupAvatarUrl }} style={styles.groupHeaderAvatarImg} />
+              ) : (
+                <Text style={styles.groupHeaderAvatarIcon}>👥</Text>
+              )}
+            </View>
+            <View style={styles.groupHeaderTextWrap}>
+              <Text style={styles.groupHeaderName} numberOfLines={1}>
+                {groupName}
+              </Text>
+              {memberCount !== null && (
+                <Text style={styles.groupMemberCount} numberOfLines={1}>
+                  {memberCount} members
+                </Text>
+              )}
+            </View>
+          </TouchableOpacity>
+        </View>
       ),
       headerRight: () => (
         <TouchableOpacity
-          onPress={() => { setEditGroupName(groupName); setNewGroupAvatarUri(null); setShowGroupSettings(true); }}
-          hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-          style={{ marginRight: 4 }}
+          onPress={openGroupSettings}
+          hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+          style={styles.groupHeaderMenuButton}
+          accessibilityLabel="Group options"
+          accessibilityRole="button"
         >
-          <Text style={{ fontSize: 12, color: '#888' }}>Edit</Text>
+          <Ionicons name="ellipsis-vertical" size={22} color="rgba(255,255,255,0.92)" />
         </TouchableOpacity>
       ),
     });
-  }, [isGroup, groupName, groupAvatarUrl, memberCount]);
+  }, [isGroup, navigation, groupName, groupAvatarUrl, memberCount, otherUsername, openGroupSettings]);
 
   // Pinned events (up to 3)
   const [pinnedEvents, setPinnedEvents] = useState<SharedEvent[]>([]);
@@ -217,7 +315,16 @@ export default function ConversationScreen() {
 
   // Create event
   const [showCreateEvent, setShowCreateEvent] = useState(false);
+
+  // Auto-open event creation if navigated here from Radar's "Start Something" flow
+  useEffect(() => {
+    if (!openEventModal) return;
+    const t = setTimeout(() => setShowCreateEvent(true), 150);
+    return () => clearTimeout(t);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
   const [eventImageUri, setEventImageUri] = useState<string | null>(null);
+  const [eventHeroCropUri, setEventHeroCropUri] = useState<string | null>(null);
   const [eventTitle, setEventTitle] = useState('');
   const [selectedDate, setSelectedDate] = useState<Date | null>(null);
   const [selectedTime, setSelectedTime] = useState<Date | null>(null);
@@ -275,6 +382,14 @@ export default function ConversationScreen() {
     const onHide = Keyboard.addListener(hideEvent, () => setKeyboardHeight(0));
     return () => { onShow.remove(); onHide.remove(); };
   }, []);
+
+  const composerPaddingBottom = useMemo(
+    () =>
+      keyboardHeight > 0
+        ? 0
+        : insets.bottom + COMPOSER_BOTTOM_INSET_EXTRA,
+    [keyboardHeight, insets.bottom],
+  );
 
   useEffect(() => {
     if (!showGroupSettings || !isGroup) return;
@@ -526,8 +641,15 @@ export default function ConversationScreen() {
           .single()
         : null;
 
-      const [authRes, msgRes, groupHeadPack, dmProfileRes] = await Promise.all([
-        supabase.auth.getUser(),
+      const { data: { session } } = await supabase.auth.getSession();
+      const user = session?.user ?? null;
+      if (!user) return;
+      setMyId(user.id);
+
+      const meRowPromise = supabase.from('users').select('username').eq('id', user.id).single();
+      const groupMembersPromise = isGroup ? loadGroupMemberProfiles(conversationId) : Promise.resolve([] as Sender[]);
+
+      const [msgRes, groupHeadPack, dmProfileRes, meRowRes, groupMembersEarly] = await Promise.all([
         supabase
           .from('messages')
           .select(messagesSelect)
@@ -536,13 +658,11 @@ export default function ConversationScreen() {
           .limit(CHAT_INITIAL_MESSAGE_LIMIT),
         groupHeaderPromise ?? Promise.resolve(null),
         dmProfilePromise ?? Promise.resolve({ data: null as any, error: null }),
+        meRowPromise,
+        groupMembersPromise,
       ]);
 
-      const { data: { user } } = authRes;
-      if (!user) return;
-      setMyId(user.id);
-      const { data: meRow } = await supabase.from('users').select('username').eq('id', user.id).single();
-      if (meRow) myUsernameRef.current = meRow.username;
+      if (meRowRes.data?.username) myUsernameRef.current = meRowRes.data.username;
 
       let pinnedIdsForLoad: string[] = [];
       let pinnedPlanIdForLoad: string | null = null;
@@ -556,8 +676,7 @@ export default function ConversationScreen() {
         pinnedIdsForLoad = convData?.pinned_event_ids ?? [];
         pinnedPlanIdForLoad = convData?.pinned_plan_id ?? null;
         setPinnedPlanId(pinnedPlanIdForLoad);
-        const memberProfiles = await loadGroupMemberProfiles(conversationId);
-        setGroupMembersList(memberProfiles);
+        setGroupMembersList(groupMembersEarly);
       }
 
       const dmRow = (dmProfileRes as { data?: { id: string; username: string; avatar_url: string | null } | null })?.data;
@@ -604,12 +723,27 @@ export default function ConversationScreen() {
         }
       } else {
         const msgs = msgData ?? [];
+        // Render quickly with base message rows, then enrich with shared entities.
+        setMessages(msgs.map((m: any) => ({
+          ...m,
+          shared_post: null,
+          shared_event: null,
+          shared_poll: null,
+          shared_availability: null,
+          shared_group_plan: null,
+          sender: isGroup ? senderCacheRef.current[m.sender_id] ?? null : null,
+        })));
+        setLoading(false);
 
         const postIds = [...new Set(msgs.filter((m: any) => m.post_id).map((m: any) => m.post_id))];
         const eventIds = [...new Set(msgs.filter((m: any) => m.event_id).map((m: any) => m.event_id))];
         const pollIds = [...new Set(msgs.filter((m: any) => m.poll_id).map((m: any) => m.poll_id))];
         const availabilityCheckIds = [...new Set(msgs.filter((m: any) => m.availability_check_id).map((m: any) => m.availability_check_id))];
-        const groupPlanIds = [...new Set(msgs.filter((m: any) => m.group_plan_id).map((m: any) => m.group_plan_id))];
+        const groupPlanIdsSet = new Set(
+          msgs.filter((m: any) => m.group_plan_id).map((m: any) => m.group_plan_id as string),
+        );
+        if (pinnedPlanIdForLoad) groupPlanIdsSet.add(pinnedPlanIdForLoad);
+        const groupPlanIds = [...groupPlanIdsSet];
         const senderIdsToFetch = isGroup
           ? ([...new Set(msgs.map((m: any) => m.sender_id))] as string[]).filter((id) => !senderCacheRef.current[id])
           : [];
@@ -687,15 +821,7 @@ export default function ConversationScreen() {
         if (isGroup) {
           setPinnedEvents((pinnedEventsData ?? []).map((e: any) => ({ ...e, creator: Array.isArray(e.creator) ? e.creator[0] ?? null : e.creator })));
           if (pinnedPlanIdForLoad) {
-            const { data: pp } = await supabase
-              .from('group_plans')
-              .select('id, conversation_id, created_by, title, location, details, created_at')
-              .eq('id', pinnedPlanIdForLoad)
-              .single();
-            if (pp) {
-              setPinnedPlan(pp as GroupPlan);
-              await loadGroupPlansMap([pp.id]);
-            }
+            setPinnedPlan(groupPlansMap[pinnedPlanIdForLoad] ?? null);
           }
         }
 
@@ -728,7 +854,6 @@ export default function ConversationScreen() {
           shared_group_plan: m.group_plan_id ? groupPlansMap[m.group_plan_id] ?? null : null,
           sender: isGroup ? senderCacheRef.current[m.sender_id] ?? null : null,
         })));
-        setLoading(false);
       }
 
       messageChannel = supabase
@@ -1102,15 +1227,16 @@ export default function ConversationScreen() {
     if (status !== 'granted') return;
     const result = await ImagePicker.launchImageLibraryAsync({
       mediaTypes: ['images'],
-      quality: 0.8,
-      allowsEditing: true,
-      aspect: [2, 1],
+      quality: 1,
+      allowsEditing: false,
     });
-    if (!result.canceled) setEventImageUri(result.assets[0].uri);
+    if (!result.canceled && result.assets[0]?.uri) {
+      setEventHeroCropUri(result.assets[0].uri);
+    }
   }
 
   async function createEvent() {
-    if (!eventTitle.trim() || !myId || creatingEvent) return;
+    if (!eventTitle.trim() || !selectedDate || !myId || creatingEvent) return;
     setCreatingEvent(true);
 
     // Use OSM static map as default image if no photo picked but location coords exist
@@ -1120,12 +1246,17 @@ export default function ConversationScreen() {
       uploadedImageUrl = `https://staticmap.openstreetmap.de/staticmap.php?center=${lat},${lon}&zoom=15&size=800x400&markers=${lat},${lon},red-pushpin`;
     }
     if (eventImageUri) {
-      const fileExt = eventImageUri.split('.').pop()?.toLowerCase() ?? 'jpg';
-      const filePath = `${myId}/event_${Date.now()}.${fileExt}`;
-      const base64 = await FileSystem.readAsStringAsync(eventImageUri, { encoding: 'base64' as any });
+      // Resize event image to 1200px wide max before uploading
+      const resizedEvent = await ImageManipulator.manipulateAsync(
+        eventImageUri,
+        [{ resize: { width: 1200 } }],
+        { compress: 0.88, format: ImageManipulator.SaveFormat.JPEG }
+      );
+      const filePath = `${myId}/event_${Date.now()}.jpg`;
+      const base64 = await FileSystem.readAsStringAsync(resizedEvent.uri, { encoding: 'base64' as any });
       const { error: uploadError } = await supabase.storage
         .from('media')
-        .upload(filePath, decode(base64), { contentType: `image/${fileExt}`, upsert: true });
+        .upload(filePath, decode(base64), { contentType: 'image/jpeg', upsert: true });
       if (!uploadError) {
         const { data: { publicUrl } } = supabase.storage.from('media').getPublicUrl(filePath);
         uploadedImageUrl = publicUrl;
@@ -1173,6 +1304,7 @@ export default function ConversationScreen() {
     setLocationCoords(null);
     setEventDescription('');
     setEventImageUri(null);
+    setEventHeroCropUri(null);
   }
 
   async function createPoll() {
@@ -1916,7 +2048,36 @@ export default function ConversationScreen() {
     scrollConversationToLatest(false);
   }, [loading, messages.length, scrollConversationToLatest]);
 
-  if (loading) return <ActivityIndicator style={{ flex: 1 }} color="#1a1a1a" />;
+  if (loading) {
+    return (
+      <View style={styles.loadingShell}>
+        <LinearGradient
+          colors={['rgba(255,255,255,0.08)', 'rgba(255,255,255,0.02)', 'rgba(0,0,0,0)']}
+          locations={[0, 0.34, 1]}
+          style={styles.screenGradient}
+          pointerEvents="none"
+        />
+        <View style={styles.loadingHeaderSkeleton}>
+          <View style={styles.loadingBackChip} />
+          <View style={styles.loadingHeaderIdentity}>
+            <View style={styles.loadingAvatarSkeleton} />
+            <View style={styles.loadingTitleSkeletonWrap}>
+              <View style={styles.loadingTitleSkeleton} />
+              <View style={styles.loadingSubtitleSkeleton} />
+            </View>
+          </View>
+        </View>
+        <View style={styles.loadingMessagesSkeleton}>
+          <View style={[styles.loadingBubbleSkeleton, styles.loadingBubbleThem, styles.loadingBubbleWide]} />
+          <View style={[styles.loadingBubbleSkeleton, styles.loadingBubbleThem, styles.loadingBubbleNarrow]} />
+          <View style={[styles.loadingBubbleSkeleton, styles.loadingBubbleMe, styles.loadingBubbleMedium]} />
+          <View style={[styles.loadingBubbleSkeleton, styles.loadingBubbleThem, styles.loadingBubbleMedium]} />
+          <View style={[styles.loadingBubbleSkeleton, styles.loadingBubbleMe, styles.loadingBubbleNarrow]} />
+        </View>
+        <ActivityIndicator color="#fff" size="small" style={styles.loadingSpinner} />
+      </View>
+    );
+  }
 
   const isIos = Platform.OS === 'ios';
 
@@ -1946,7 +2107,10 @@ export default function ConversationScreen() {
 
   const composer = (
     <View
-      style={styles.composerContainer}
+      style={[
+        styles.composerContainer,
+        { paddingBottom: composerPaddingBottom },
+      ]}
       onLayout={(event) => {
         const nextHeight = Math.ceil(event.nativeEvent.layout.height);
         if (nextHeight > 0 && Math.abs(nextHeight - composerHeight) > 1) {
@@ -1955,6 +2119,8 @@ export default function ConversationScreen() {
         }
       }}
     >
+      <BlurView intensity={34} tint="dark" style={StyleSheet.absoluteFill} pointerEvents="none" />
+      <View style={styles.composerGlassTint} pointerEvents="none" />
       {typingUsernames.length > 0 && (
         <View style={styles.typingRow}>
           <Text style={styles.typingText}>
@@ -1976,7 +2142,7 @@ export default function ConversationScreen() {
         ref={textInputRef}
         style={styles.input}
         placeholder="Message..."
-        placeholderTextColor="#999"
+        placeholderTextColor="rgba(255,255,255,0.45)"
         value={text}
         onChangeText={handleTextChange}
         onFocus={() => {
@@ -2004,81 +2170,97 @@ export default function ConversationScreen() {
 
   return (
     <View style={styles.container}>
-      {/* Pinned event banners (up to 3) */}
-      {isGroup && pinnedEvents.map((pe) => (
-        <TouchableOpacity
-          key={pe.id}
-          style={styles.pinnedBanner}
-          onPress={() => navigation.navigate('EventDetail', { eventId: pe.id })}
-          onLongPress={() => Alert.alert('Unpin event?', 'Remove this event from the top of the chat?', [
-            { text: 'Unpin', style: 'destructive', onPress: () => pinEvent(pe) },
-            { text: 'Cancel', style: 'cancel' },
-          ])}
-        >
-          <Text style={styles.pinnedIcon}>📌</Text>
-          <View style={{ flex: 1 }}>
-            <Text style={styles.pinnedLabel}>Pinned event</Text>
-            <Text style={styles.pinnedTitle} numberOfLines={1}>{pe.title}</Text>
-          </View>
-          {pe.date ? <Text style={styles.pinnedDate}>{pe.date}</Text> : null}
-        </TouchableOpacity>
-      ))}
+      <StatusBar style="light" />
+      <LinearGradient
+        colors={['rgba(255,255,255,0.1)', 'rgba(255,255,255,0.03)', 'rgba(0,0,0,0)']}
+        locations={[0, 0.34, 1]}
+        style={styles.screenGradient}
+        pointerEvents="none"
+      />
 
-      {/* Pinned quick plan header */}
-      {isGroup && pinnedPlan && (() => {
-        void voterDisplayEpoch;
-        const planId = pinnedPlan.id;
-        const buckets = groupPlanRsvps[planId] ?? emptyGroupPlanRsvpBuckets();
-        const myRsvp: GroupPlanResponse | null =
-          myId && buckets.yes.includes(myId) ? 'yes'
-          : myId && buckets.no.includes(myId) ? 'no'
-          : myId && buckets.maybe.includes(myId) ? 'maybe' : null;
-        const pill = (label: string, response: GroupPlanResponse, count: number) => (
-          <TouchableOpacity
-            key={response}
-            style={[styles.groupPlanPill, myRsvp === response && styles.groupPlanPillSelected]}
-            onPress={() => setGroupPlanRsvpResponse(planId, response)}
-          >
-            <Text style={[styles.groupPlanPillLabel, myRsvp === response && styles.groupPlanPillLabelSelected]}>
-              {label}{count > 0 ? ` ${count}` : ''}
-            </Text>
-          </TouchableOpacity>
-        );
-        return (
-          <View style={styles.pinnedPlanCard}>
-            <View style={styles.pinnedPlanHeaderRow}>
-              <Text style={styles.pinnedPlanEyebrow}>📌 Pinned plan</Text>
+      {isGroup && (pinnedEvents.length > 0 || pinnedPlan) && (
+        <View style={styles.pinnedFloatingLayer} pointerEvents="box-none">
+          {/* Pinned event banners (up to 3) */}
+          {pinnedEvents.map((pe, index) => (
+            <TouchableOpacity
+              key={pe.id}
+              style={[styles.pinnedBanner, { top: 8 + index * 62, zIndex: 50 - index }]}
+              onPress={() => navigation.navigate('EventDetail', { eventId: pe.id })}
+              onLongPress={() => Alert.alert('Unpin event?', 'Remove this event from the top of the chat?', [
+                { text: 'Unpin', style: 'destructive', onPress: () => pinEvent(pe) },
+                { text: 'Cancel', style: 'cancel' },
+              ])}
+            >
+              <BlurView intensity={34} tint="dark" style={StyleSheet.absoluteFill} pointerEvents="none" />
+              <View style={styles.pinnedEventTint} pointerEvents="none" />
+              <Text style={styles.pinnedIcon}>📌</Text>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.pinnedLabel}>Pinned event</Text>
+                <Text style={styles.pinnedTitle} numberOfLines={1}>{pe.title}</Text>
+              </View>
+              {pe.date ? <Text style={styles.pinnedDate}>{pe.date}</Text> : null}
+            </TouchableOpacity>
+          ))}
+
+          {/* Pinned quick plan header */}
+          {pinnedPlan && (() => {
+            void voterDisplayEpoch;
+            const planId = pinnedPlan.id;
+            const buckets = groupPlanRsvps[planId] ?? emptyGroupPlanRsvpBuckets();
+            const myRsvp: GroupPlanResponse | null =
+              myId && buckets.yes.includes(myId) ? 'yes'
+              : myId && buckets.no.includes(myId) ? 'no'
+              : myId && buckets.maybe.includes(myId) ? 'maybe' : null;
+            const pill = (label: string, response: GroupPlanResponse, count: number) => (
               <TouchableOpacity
-                hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-                onPress={() => Alert.alert('Unpin plan?', 'Remove from top of chat?', [
-                  { text: 'Unpin', style: 'destructive', onPress: unpinGroupPlan },
-                  { text: 'Cancel', style: 'cancel' },
-                ])}
+                key={response}
+                style={[styles.groupPlanPill, myRsvp === response && styles.groupPlanPillSelected]}
+                onPress={() => setGroupPlanRsvpResponse(planId, response)}
               >
-                <Text style={styles.pinnedPlanUnpinBtn}>✕</Text>
+                <Text style={[styles.groupPlanPillLabel, myRsvp === response && styles.groupPlanPillLabelSelected]}>
+                  {label}{count > 0 ? ` ${count}` : ''}
+                </Text>
               </TouchableOpacity>
-            </View>
-            <Text style={styles.pinnedPlanTitle} numberOfLines={2}>{pinnedPlan.title}</Text>
-            {pinnedPlan.location ? <Text style={styles.pinnedPlanMeta}>📍 {pinnedPlan.location}</Text> : null}
-            {pinnedPlan.details ? <Text style={styles.pinnedPlanMeta} numberOfLines={2}>{pinnedPlan.details}</Text> : null}
-            <View style={styles.groupPlanPillRow}>
-              {pill('Yes', 'yes', buckets.yes.length)}
-              {pill('No', 'no', buckets.no.length)}
-              {pill('Maybe', 'maybe', buckets.maybe.length)}
-            </View>
-            {(['yes', 'no', 'maybe'] as const).map((k) => {
-              const ids = buckets[k];
-              if (ids.length === 0) return null;
-              return (
-                <View key={k} style={styles.groupPlanWhoRow}>
-                  <Text style={styles.groupPlanWhoLabel}>{k === 'yes' ? 'Yes' : k === 'no' ? 'No' : 'Maybe'}</Text>
-                  {renderGroupPlanVoters(ids)}
+            );
+            return (
+              <View style={[styles.pinnedPlanCard, { top: 8 + pinnedEvents.length * 62 }]}>
+                <BlurView intensity={34} tint="dark" style={StyleSheet.absoluteFill} pointerEvents="none" />
+                <View style={styles.pinnedPlanTint} pointerEvents="none" />
+                <View style={styles.pinnedPlanHeaderRow}>
+                  <Text style={styles.pinnedPlanEyebrow}>📌 Pinned plan</Text>
+                  <TouchableOpacity
+                    hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                    onPress={() => Alert.alert('Unpin plan?', 'Remove from top of chat?', [
+                      { text: 'Unpin', style: 'destructive', onPress: unpinGroupPlan },
+                      { text: 'Cancel', style: 'cancel' },
+                    ])}
+                  >
+                    <Text style={styles.pinnedPlanUnpinBtn}>✕</Text>
+                  </TouchableOpacity>
                 </View>
-              );
-            })}
-          </View>
-        );
-      })()}
+                <Text style={styles.pinnedPlanTitle} numberOfLines={2}>{pinnedPlan.title}</Text>
+                {pinnedPlan.location ? <Text style={styles.pinnedPlanMeta}>📍 {pinnedPlan.location}</Text> : null}
+                {pinnedPlan.details ? <Text style={styles.pinnedPlanMeta} numberOfLines={2}>{pinnedPlan.details}</Text> : null}
+                <View style={styles.groupPlanPillRow}>
+                  {pill('Yes', 'yes', buckets.yes.length)}
+                  {pill('No', 'no', buckets.no.length)}
+                  {pill('Maybe', 'maybe', buckets.maybe.length)}
+                </View>
+                {(['yes', 'no', 'maybe'] as const).map((k) => {
+                  const ids = buckets[k];
+                  if (ids.length === 0) return null;
+                  return (
+                    <View key={k} style={styles.groupPlanWhoRow}>
+                      <Text style={styles.groupPlanWhoLabel}>{k === 'yes' ? 'Yes' : k === 'no' ? 'No' : 'Maybe'}</Text>
+                      {renderGroupPlanVoters(ids)}
+                    </View>
+                  );
+                })}
+              </View>
+            );
+          })()}
+        </View>
+      )}
 
       <KeyboardAvoidingView
         style={styles.chatKeyboardAvoid}
@@ -2090,6 +2272,7 @@ export default function ConversationScreen() {
           style={styles.messageListFlex}
           data={[...messages].reverse()}
           keyExtractor={(item) => item.id}
+          showsVerticalScrollIndicator={false}
           contentContainerStyle={styles.messageList}
           inverted
           maintainVisibleContentPosition={{ minIndexForVisible: 0, autoscrollToTopThreshold: 1 }}
@@ -2143,7 +2326,7 @@ export default function ConversationScreen() {
                   }}
                 >
                   {item.shared_event!.image_url ? (
-                    <Image source={{ uri: item.shared_event!.image_url }} style={styles.eventCardImage} resizeMode="cover" />
+                    <Image source={{ uri: item.shared_event!.image_url }} style={styles.eventCardImage} contentFit="cover" />
                   ) : null}
                   <View style={styles.eventCardBody}>
                     <Text style={styles.eventCardEmoji}>📅</Text>
@@ -2416,7 +2599,7 @@ export default function ConversationScreen() {
             >
               {showSender ? (
                 <View style={styles.groupMessageRow}>
-                  <TouchableOpacity onPress={() => navigation.navigate('UserProfile', { userId: item.sender!.id })}>
+                  <TouchableOpacity onPress={() => navigateToUserProfile(navigation, item.sender!.id)}>
                     <View style={styles.senderAvatar}>
                       {item.sender!.avatar_url ? (
                         <Image source={{ uri: item.sender!.avatar_url }} style={styles.senderAvatarImg} />
@@ -2428,7 +2611,7 @@ export default function ConversationScreen() {
                     </View>
                   </TouchableOpacity>
                   <View style={styles.groupMessageContent}>
-                    <TouchableOpacity onPress={() => navigation.navigate('UserProfile', { userId: item.sender!.id })}>
+                    <TouchableOpacity onPress={() => navigateToUserProfile(navigation, item.sender!.id)}>
                       <Text style={styles.senderUsername}>@{item.sender!.username}</Text>
                     </TouchableOpacity>
                     {bubbleContent}
@@ -2436,7 +2619,7 @@ export default function ConversationScreen() {
                 </View>
               ) : showDmAvatar ? (
                 <View style={styles.groupMessageRow}>
-                  <TouchableOpacity onPress={() => navigation.navigate('UserProfile', { userId: otherUserProfile!.id })}>
+                  <TouchableOpacity onPress={() => navigateToUserProfile(navigation, otherUserProfile!.id)}>
                     <View style={styles.senderAvatar}>
                       {otherUserProfile!.avatar_url ? (
                         <Image source={{ uri: otherUserProfile!.avatar_url }} style={styles.senderAvatarImg} />
@@ -2642,9 +2825,24 @@ export default function ConversationScreen() {
         </KeyboardAvoidingView>
       </Modal>
       {/* Create event modal */}
-      <Modal visible={showCreateEvent} animationType="slide" transparent onRequestClose={() => setShowCreateEvent(false)}>
+      <Modal
+        visible={showCreateEvent}
+        animationType="slide"
+        transparent
+        onRequestClose={() => {
+          setEventHeroCropUri(null);
+          setShowCreateEvent(false);
+        }}
+      >
         <KeyboardAvoidingView style={styles.modalOverlay} behavior={Platform.OS === 'ios' ? 'height' : 'padding'} keyboardVerticalOffset={0}>
-          <TouchableOpacity style={styles.modalBackdrop} activeOpacity={1} onPress={() => setShowCreateEvent(false)} />
+          <TouchableOpacity
+            style={styles.modalBackdrop}
+            activeOpacity={1}
+            onPress={() => {
+              setEventHeroCropUri(null);
+              setShowCreateEvent(false);
+            }}
+          />
           <View style={styles.createEventSheet}>
             <View style={styles.modalHandle} />
             <Text style={styles.modalTitle}>Create Event</Text>
@@ -2684,7 +2882,7 @@ export default function ConversationScreen() {
               >
                 <Text style={styles.pickerBtnIcon}>📆</Text>
                 <Text style={[styles.pickerBtnText, !selectedDate && styles.pickerBtnPlaceholder]}>
-                  {selectedDate ? formatDate(selectedDate) : 'Select date'}
+                  {selectedDate ? formatDate(selectedDate) : 'Select date (required)'}
                 </Text>
                 {selectedDate && (
                   <TouchableOpacity onPress={() => { setSelectedDate(null); setShowDatePicker(false); }}>
@@ -2779,9 +2977,9 @@ export default function ConversationScreen() {
                 multiline
               />
               <TouchableOpacity
-                style={[styles.saveBtn, (!eventTitle.trim() || creatingEvent) && styles.saveBtnDisabled]}
+                style={[styles.saveBtn, (!eventTitle.trim() || !selectedDate || creatingEvent) && styles.saveBtnDisabled]}
                 onPress={createEvent}
-                disabled={!eventTitle.trim() || creatingEvent}
+                disabled={!eventTitle.trim() || !selectedDate || creatingEvent}
               >
                 {creatingEvent
                   ? <ActivityIndicator color="#fff" />
@@ -2792,6 +2990,15 @@ export default function ConversationScreen() {
           </View>
         </KeyboardAvoidingView>
       </Modal>
+      <EventHeroCropModal
+        visible={Boolean(eventHeroCropUri)}
+        imageUri={eventHeroCropUri}
+        onClose={() => setEventHeroCropUri(null)}
+        onComplete={(uri) => {
+          setEventImageUri(uri);
+          setEventHeroCropUri(null);
+        }}
+      />
       {/* Create poll modal */}
       <Modal visible={showCreatePoll} animationType="slide" transparent onRequestClose={() => setShowCreatePoll(false)}>
         <KeyboardAvoidingView style={styles.modalOverlay} behavior={Platform.OS === 'ios' ? 'height' : 'padding'} keyboardVerticalOffset={0}>
@@ -3011,41 +3218,84 @@ export default function ConversationScreen() {
       </Modal>
 
       {/* Group settings modal */}
-      <Modal visible={showGroupSettings} animationType="slide" transparent onRequestClose={() => setShowGroupSettings(false)}>
-        <KeyboardAvoidingView style={styles.modalOverlay} behavior="padding">
-          <TouchableOpacity style={styles.modalBackdrop} activeOpacity={1} onPress={() => setShowGroupSettings(false)} />
-          <View style={styles.modalSheet}>
-            <View style={styles.modalHandle} />
-            <ScrollView keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false}>
-              <Text style={styles.modalTitle}>Group Settings</Text>
-
-              <TouchableOpacity style={styles.groupAvatarPicker} onPress={pickGroupAvatar}>
-                {newGroupAvatarUri || groupAvatarUrl ? (
-                  <Image source={{ uri: newGroupAvatarUri ?? groupAvatarUrl! }} style={styles.groupAvatarPickerImg} />
-                ) : (
-                  <Text style={styles.groupAvatarPickerIcon}>👥</Text>
-                )}
-                <View style={styles.groupAvatarBadge}>
-                  <Text style={styles.groupAvatarBadgeText}>Edit</Text>
+      <Modal visible={showGroupSettings} animationType="slide" transparent onRequestClose={closeGroupSettingsSheet}>
+        <GestureHandlerRootView style={styles.modalOverlay}>
+          <KeyboardAvoidingView style={styles.modalOverlay} behavior="padding">
+            <Pressable
+              style={styles.groupSettingsDismissArea}
+              onPress={closeGroupSettingsSheet}
+              accessibilityLabel="Dismiss"
+              accessibilityRole="button"
+            />
+            <Animated.View style={[styles.groupSettingsSheet, groupSheetAnimatedStyle]}>
+              {Platform.OS === 'ios' ? (
+                <BlurView intensity={38} tint="dark" style={StyleSheet.absoluteFill} />
+              ) : null}
+              <View
+                style={[
+                  styles.groupSettingsSheetTint,
+                  Platform.OS === 'android' && styles.groupSettingsSheetTintAndroid,
+                ]}
+                pointerEvents="none"
+              />
+              <GestureDetector gesture={groupSheetPanGesture}>
+                <View style={styles.groupSettingsDragZone}>
+                  <View style={styles.groupSettingsHandle} />
+                  <Text style={styles.groupSettingsTitle}>Group settings</Text>
                 </View>
-              </TouchableOpacity>
+              </GestureDetector>
+              <ScrollView
+                keyboardShouldPersistTaps="handled"
+                showsVerticalScrollIndicator={false}
+                contentContainerStyle={[
+                  styles.groupSettingsScrollContent,
+                  { paddingBottom: insets.bottom + 18 },
+                ]}
+              >
+              <View style={styles.groupSettingsAvatarOuter}>
+                <TouchableOpacity
+                  style={styles.groupSettingsAvatarCircle}
+                  onPress={pickGroupAvatar}
+                  activeOpacity={0.88}
+                  accessibilityLabel="Change group photo"
+                  accessibilityRole="button"
+                >
+                  {newGroupAvatarUri || groupAvatarUrl ? (
+                    <Image
+                      source={{ uri: newGroupAvatarUri ?? groupAvatarUrl! }}
+                      style={styles.groupSettingsAvatarImg}
+                      contentFit="cover"
+                    />
+                  ) : (
+                    <View style={styles.groupSettingsAvatarPlaceholder}>
+                      <Text style={styles.groupSettingsAvatarPlaceholderEmoji}>👥</Text>
+                    </View>
+                  )}
+                </TouchableOpacity>
+                <View style={styles.groupSettingsAvatarFab} pointerEvents="none">
+                  <Ionicons name="camera" size={15} color="rgba(255,255,255,0.95)" />
+                </View>
+              </View>
 
               <TextInput
-                style={styles.groupNameInput}
+                style={styles.groupSettingsNameInput}
                 value={editGroupName}
                 onChangeText={setEditGroupName}
                 placeholder="Group name..."
-                placeholderTextColor="#999"
+                placeholderTextColor="rgba(255,255,255,0.42)"
               />
 
               <TouchableOpacity
-                style={[styles.saveBtn, (!editGroupName.trim() || savingGroup) && styles.saveBtnDisabled]}
+                style={[
+                  styles.groupSettingsSaveBtn,
+                  (!editGroupName.trim() || savingGroup) && styles.groupSettingsSaveBtnDisabled,
+                ]}
                 onPress={saveGroupSettings}
                 disabled={!editGroupName.trim() || savingGroup}
               >
                 {savingGroup
                   ? <ActivityIndicator color="#fff" />
-                  : <Text style={styles.saveBtnText}>Save</Text>
+                  : <Text style={styles.groupSettingsSaveBtnText}>Save</Text>
                 }
               </TouchableOpacity>
 
@@ -3056,60 +3306,174 @@ export default function ConversationScreen() {
                 groupMembersList.map((m) => (
                   <TouchableOpacity
                     key={m.id}
-                    style={styles.groupMemberRow}
+                    style={styles.groupSettingsMemberRow}
                     onPress={() => {
-                      setShowGroupSettings(false);
-                      navigation.navigate('UserProfile', { userId: m.id });
+                      closeGroupSettingsSheet();
+                      navigateToUserProfile(navigation, m.id);
                     }}
                     activeOpacity={0.65}
                   >
-                    <View style={styles.groupMemberAvatar}>
+                    <View style={styles.groupSettingsMemberAvatar}>
                       {m.avatar_url ? (
-                        <Image source={{ uri: m.avatar_url }} style={styles.groupMemberAvatarImg} />
+                        <Image source={{ uri: m.avatar_url }} style={styles.groupSettingsMemberAvatarImg} />
                       ) : (
-                        <Text style={styles.groupMemberAvatarInitial}>{m.username[0]?.toUpperCase() ?? '?'}</Text>
+                        <Text style={styles.groupSettingsMemberAvatarInitial}>{m.username[0]?.toUpperCase() ?? '?'}</Text>
                       )}
                     </View>
-                    <Text style={styles.groupMemberName}>@{m.username}</Text>
-                    <Text style={styles.groupMemberChevron}>›</Text>
+                    <Text style={styles.groupSettingsMemberName}>@{m.username}</Text>
+                    <Text style={styles.groupSettingsMemberChevron}>›</Text>
                   </TouchableOpacity>
                 ))
               )}
 
               {myId === groupCreatedBy && (
                 <TouchableOpacity
-                  style={[styles.saveBtn, { backgroundColor: '#e0245e', marginTop: 20 }]}
-                  onPress={() => { setShowGroupSettings(false); deleteGroup(); }}
+                  style={styles.groupSettingsDeleteBtn}
+                  onPress={() => { closeGroupSettingsSheet(); deleteGroup(); }}
                 >
-                  <Text style={styles.saveBtnText}>Delete Group</Text>
+                  <Text style={styles.groupSettingsDeleteBtnText}>Delete group</Text>
                 </TouchableOpacity>
               )}
-            </ScrollView>
-          </View>
-        </KeyboardAvoidingView>
+              </ScrollView>
+            </Animated.View>
+          </KeyboardAvoidingView>
+        </GestureHandlerRootView>
       </Modal>
     </View>
   );
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#fafaf8' },
+  container: { flex: 1, backgroundColor: '#08090a' },
+  loadingShell: {
+    flex: 1,
+    backgroundColor: '#08090a',
+  },
+  loadingHeaderSkeleton: {
+    paddingTop: 14,
+    paddingHorizontal: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: 'rgba(255,255,255,0.1)',
+    backgroundColor: 'rgba(8,9,10,0.84)',
+  },
+  loadingBackChip: {
+    width: 32,
+    height: 22,
+    borderRadius: 999,
+    backgroundColor: 'rgba(255,255,255,0.14)',
+    marginBottom: 10,
+  },
+  loadingHeaderIdentity: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    paddingBottom: 10,
+  },
+  loadingAvatarSkeleton: {
+    width: 34,
+    height: 34,
+    borderRadius: 17,
+    backgroundColor: 'rgba(255,255,255,0.14)',
+  },
+  loadingTitleSkeletonWrap: {
+    gap: 6,
+  },
+  loadingTitleSkeleton: {
+    width: 146,
+    height: 14,
+    borderRadius: 7,
+    backgroundColor: 'rgba(255,255,255,0.18)',
+  },
+  loadingSubtitleSkeleton: {
+    width: 84,
+    height: 10,
+    borderRadius: 6,
+    backgroundColor: 'rgba(255,255,255,0.12)',
+  },
+  loadingMessagesSkeleton: {
+    flex: 1,
+    width: '100%',
+    paddingHorizontal: 12,
+    paddingTop: 14,
+    gap: 10,
+  },
+  loadingBubbleSkeleton: {
+    height: 38,
+    borderRadius: 14,
+    backgroundColor: 'rgba(255,255,255,0.1)',
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.16)',
+  },
+  loadingBubbleThem: {
+    alignSelf: 'flex-start',
+    borderBottomLeftRadius: 4,
+  },
+  loadingBubbleMe: {
+    alignSelf: 'flex-end',
+    borderBottomRightRadius: 4,
+  },
+  loadingBubbleWide: { width: '72%' },
+  loadingBubbleMedium: { width: '58%' },
+  loadingBubbleNarrow: { width: '44%' },
+  loadingSpinner: {
+    marginBottom: 18,
+  },
+  screenGradient: {
+    ...StyleSheet.absoluteFillObject,
+  },
   chatKeyboardAvoid: { flex: 1 },
   composerContainer: {
+    position: 'relative',
     width: '100%',
     flexShrink: 0,
-    backgroundColor: '#fff',
+    backgroundColor: 'rgba(8,9,10,0.84)',
     borderTopWidth: 1,
-    borderTopColor: '#eee',
+    borderTopColor: 'rgba(255,255,255,0.12)',
+  },
+  composerGlassTint: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: 'rgba(255,255,255,0.06)',
+  },
+  groupHeaderBg: {
+    flex: 1,
+    backgroundColor: '#08090a',
+    borderTopLeftRadius: 22,
+    borderTopRightRadius: 22,
+    overflow: 'hidden',
+  },
+  groupHeaderLeftRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    flex: 1,
+    minWidth: 0,
+    marginLeft: Platform.OS === 'ios' ? -4 : 0,
+  },
+  groupHeaderTitlePressable: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    flex: 1,
+    minWidth: 0,
+    paddingVertical: 4,
+    paddingRight: 8,
+    gap: 10,
+  },
+  groupHeaderTextWrap: { flex: 1, minWidth: 0, justifyContent: 'center' },
+  groupHeaderMenuButton: {
+    marginRight: 6,
+    padding: 8,
+    justifyContent: 'center',
+    alignItems: 'center',
   },
   groupHeaderAvatar: {
-    width: 36, height: 36, borderRadius: 18,
-    backgroundColor: '#e0e0e0', alignItems: 'center', justifyContent: 'center', overflow: 'hidden',
+    width: 38, height: 38, borderRadius: 19,
+    backgroundColor: 'rgba(255,255,255,0.12)', alignItems: 'center', justifyContent: 'center', overflow: 'hidden',
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.22)',
   },
-  groupHeaderAvatarImg: { width: 36, height: 36 },
-  groupHeaderAvatarIcon: { fontSize: 18 },
-  groupHeaderName: { fontSize: 13, fontWeight: '700', color: '#1a1a1a' },
-  groupMemberCount: { fontSize: 11, color: '#888', marginTop: 1 },
+  groupHeaderAvatarImg: { width: 38, height: 38 },
+  groupHeaderAvatarIcon: { fontSize: 19 },
+  groupHeaderName: { fontSize: 17, fontWeight: '700', color: '#fff', letterSpacing: -0.3 },
+  groupMemberCount: { fontSize: 12, color: 'rgba(255,255,255,0.62)', marginTop: 1 },
   messageListFlex: { flex: 1 },
   messageList: {
     paddingHorizontal: 16,
@@ -3119,7 +3483,7 @@ const styles = StyleSheet.create({
     flexGrow: 1,
   },
   emptyChat: { flex: 1, alignItems: 'center', justifyContent: 'center', marginTop: 80 },
-  emptyChatText: { fontSize: 15, color: '#aaa' },
+  emptyChatText: { fontSize: 15, color: 'rgba(255,255,255,0.62)' },
   groupMessageRow: { flexDirection: 'row', alignItems: 'flex-end', gap: 8, marginBottom: 2 },
   senderAvatar: {
     width: 32, height: 32, borderRadius: 16,
@@ -3127,27 +3491,28 @@ const styles = StyleSheet.create({
     overflow: 'hidden', marginBottom: 4,
   },
   senderAvatarImg: { width: 32, height: 32 },
-  senderAvatarInitial: { fontSize: 12, fontWeight: '600', color: '#888' },
+  senderAvatarInitial: { fontSize: 12, fontWeight: '600', color: '#5f6f85' },
   groupMessageContent: { flex: 1 },
-  senderUsername: { fontSize: 11, fontWeight: '600', color: '#888', marginBottom: 3, marginLeft: 4 },
+  senderUsername: { fontSize: 11, fontWeight: '600', color: 'rgba(255,255,255,0.52)', marginBottom: 3, marginLeft: 4 },
   bubble: {
     maxWidth: '75%', paddingHorizontal: 14, paddingVertical: 9,
     borderRadius: 18, marginBottom: 2,
+    borderWidth: 1,
   },
-  bubbleMe: { alignSelf: 'flex-end', backgroundColor: '#1a1a1a', borderBottomRightRadius: 4 },
-  bubbleThem: { alignSelf: 'flex-start', backgroundColor: '#e8e8e8', borderBottomLeftRadius: 4 },
+  bubbleMe: { alignSelf: 'flex-end', backgroundColor: 'rgba(26,26,26,0.9)', borderColor: 'rgba(255,255,255,0.12)', borderBottomRightRadius: 4 },
+  bubbleThem: { alignSelf: 'flex-start', backgroundColor: 'rgba(255,255,255,0.12)', borderColor: 'rgba(255,255,255,0.22)', borderBottomLeftRadius: 4 },
   bubbleText: { fontSize: 15, lineHeight: 20 },
   bubbleTextMe: { color: '#fff' },
-  bubbleTextThem: { color: '#1a1a1a' },
+  bubbleTextThem: { color: 'rgba(255,255,255,0.94)' },
   bubbleTime: { fontSize: 10, marginTop: 3 },
   bubbleTimeMe: { color: 'rgba(255,255,255,0.6)', textAlign: 'right' },
-  bubbleTimeThem: { color: '#aaa' },
+  bubbleTimeThem: { color: 'rgba(255,255,255,0.52)' },
   likeRow: { flexDirection: 'row', alignItems: 'center', gap: 2, marginBottom: 6, marginTop: -2 },
   likeRowMe: { justifyContent: 'flex-end', paddingRight: 6 },
   likeRowThem: { justifyContent: 'flex-start', paddingLeft: 6 },
-  likeHeart: { fontSize: 12, color: '#ccc' },
+  likeHeart: { fontSize: 12, color: 'rgba(255,255,255,0.45)' },
   likeHeartActive: { color: '#e0245e' },
-  likeCount: { fontSize: 11, color: '#aaa' },
+  likeCount: { fontSize: 11, color: 'rgba(255,255,255,0.55)' },
   deletedMessageRow: {
     alignSelf: 'center',
     marginBottom: 8,
@@ -3156,34 +3521,38 @@ const styles = StyleSheet.create({
   },
   deletedMessageText: {
     fontSize: 12,
-    color: '#999',
+    color: 'rgba(255,255,255,0.5)',
     fontStyle: 'italic',
   },
   sharedPost: {
     maxWidth: '75%', borderRadius: 12, overflow: 'hidden',
-    marginBottom: 4, borderWidth: 1, borderColor: '#e0e0e0', backgroundColor: '#fff',
+    marginBottom: 4, borderWidth: 1, borderColor: 'rgba(255,255,255,0.15)', backgroundColor: 'rgba(255,255,255,0.08)',
   },
   sharedPostMe: { alignSelf: 'flex-end' },
   sharedPostThem: { alignSelf: 'flex-start' },
   sharedPostImage: { width: SCREEN_WIDTH * 0.6, height: SCREEN_WIDTH * 0.6 },
   sharedPostInfo: { padding: 8 },
-  sharedPostUser: { fontSize: 12, fontWeight: '600', color: '#1a1a1a', marginBottom: 2 },
-  sharedPostCaption: { fontSize: 12, color: '#555' },
+  sharedPostUser: { fontSize: 12, fontWeight: '600', color: 'rgba(255,255,255,0.9)', marginBottom: 2 },
+  sharedPostCaption: { fontSize: 12, color: 'rgba(255,255,255,0.65)' },
   inputRow: {
     flexDirection: 'row', alignItems: 'flex-end',
     paddingHorizontal: 12, paddingVertical: 8, gap: 8,
-    backgroundColor: '#fff',
+    backgroundColor: 'transparent',
   },
   input: {
     flex: 1, minHeight: 40, maxHeight: 100,
-    backgroundColor: '#f5f5f5', borderRadius: 20,
-    paddingHorizontal: 14, paddingVertical: 10, fontSize: 15, color: '#1a1a1a',
+    backgroundColor: 'rgba(255,255,255,0.1)', borderRadius: 20,
+    paddingHorizontal: 14, paddingVertical: 10, fontSize: 15, color: '#fff',
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.14)',
   },
   sendBtn: {
     width: 40, height: 40, borderRadius: 20,
-    backgroundColor: '#1a1a1a', alignItems: 'center', justifyContent: 'center',
+    backgroundColor: 'rgba(255,255,255,0.16)', alignItems: 'center', justifyContent: 'center',
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.2)',
   },
-  sendBtnDisabled: { backgroundColor: '#ccc' },
+  sendBtnDisabled: { backgroundColor: 'rgba(255,255,255,0.08)', borderColor: 'rgba(255,255,255,0.1)' },
   sendBtnText: { color: '#fff', fontSize: 20, fontWeight: '700' },
   modalOverlay: { flex: 1, justifyContent: 'flex-end' },
   modalBackdrop: { flex: 1, backgroundColor: 'rgba(0,0,0,0.3)' },
@@ -3193,56 +3562,178 @@ const styles = StyleSheet.create({
   },
   modalHandle: { width: 36, height: 4, borderRadius: 2, backgroundColor: '#ddd', alignSelf: 'center', marginBottom: 16 },
   modalTitle: { fontSize: 16, fontWeight: '700', color: '#1a1a1a', textAlign: 'center', marginBottom: 20 },
-  groupAvatarPicker: { alignSelf: 'center', marginBottom: 20, alignItems: 'center' },
-  groupAvatarPickerImg: { width: 80, height: 80, borderRadius: 40 },
-  groupAvatarPickerIcon: { fontSize: 40, width: 80, height: 80, borderRadius: 40, backgroundColor: '#e0e0e0', textAlign: 'center', lineHeight: 80 },
-  groupAvatarBadge: { marginTop: 8, paddingHorizontal: 14, paddingVertical: 5, backgroundColor: '#1a1a1a', borderRadius: 20 },
-  groupAvatarBadgeText: { color: '#fff', fontSize: 12, fontWeight: '600' },
-  groupNameInput: {
-    width: '100%', height: 48, backgroundColor: '#f5f5f5',
-    borderRadius: 10, paddingHorizontal: 14, fontSize: 15, color: '#1a1a1a', marginBottom: 16,
-  },
-  groupSettingsMembersHeading: {
-    fontSize: 12,
-    fontWeight: '700',
-    color: '#888',
-    textTransform: 'uppercase',
-    letterSpacing: 0.4,
-    marginTop: 8,
-    marginBottom: 10,
-    alignSelf: 'flex-start',
-  },
-  groupSettingsMembersEmpty: { fontSize: 14, color: '#aaa', marginBottom: 8 },
-  groupMemberRow: {
-    flexDirection: 'row',
+  groupSettingsDismissArea: { flex: 1 },
+  groupSettingsDragZone: {
+    width: '100%',
     alignItems: 'center',
-    gap: 12,
-    paddingVertical: 10,
-    paddingHorizontal: 12,
-    backgroundColor: '#f5f5f5',
-    borderRadius: 12,
-    marginBottom: 8,
+    paddingTop: 4,
+    paddingBottom: 10,
   },
-  groupMemberAvatar: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
-    backgroundColor: '#e0e0e0',
+  groupSettingsSheet: {
+    position: 'relative',
+    width: '100%',
+    alignSelf: 'stretch',
+    maxHeight: Dimensions.get('window').height * 0.72,
+    borderTopLeftRadius: 22,
+    borderTopRightRadius: 22,
     overflow: 'hidden',
+  },
+  groupSettingsSheetTint: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: 'rgba(12,13,16,0.58)',
+  },
+  groupSettingsSheetTintAndroid: {
+    backgroundColor: 'rgba(18,19,22,0.97)',
+  },
+  groupSettingsScrollContent: {
+    paddingHorizontal: 20,
+    paddingTop: 6,
+  },
+  groupSettingsHandle: {
+    width: 40,
+    height: 4,
+    borderRadius: 2,
+    backgroundColor: 'rgba(255,255,255,0.28)',
+    alignSelf: 'center',
+    marginBottom: 12,
+  },
+  groupSettingsTitle: {
+    fontSize: 18,
+    fontWeight: '800',
+    color: '#fff',
+    textAlign: 'center',
+    marginBottom: 14,
+    letterSpacing: -0.4,
+  },
+  groupSettingsAvatarOuter: {
+    alignSelf: 'center',
+    width: 108,
+    height: 108,
+    marginBottom: 16,
+  },
+  groupSettingsAvatarCircle: {
+    width: 108,
+    height: 108,
+    borderRadius: 54,
+    overflow: 'hidden',
+    borderWidth: 2,
+    borderColor: 'rgba(255,255,255,0.22)',
+    backgroundColor: 'rgba(255,255,255,0.06)',
+  },
+  groupSettingsAvatarImg: { width: '100%', height: '100%' },
+  groupSettingsAvatarPlaceholder: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: 'rgba(255,255,255,0.08)',
+  },
+  groupSettingsAvatarPlaceholderEmoji: { fontSize: 44, lineHeight: 52 },
+  groupSettingsAvatarFab: {
+    position: 'absolute',
+    right: 0,
+    bottom: 0,
+    width: 34,
+    height: 34,
+    borderRadius: 17,
+    backgroundColor: 'rgba(255,255,255,0.22)',
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.38)',
     alignItems: 'center',
     justifyContent: 'center',
   },
-  groupMemberAvatarImg: { width: 40, height: 40 },
-  groupMemberAvatarInitial: { fontSize: 16, fontWeight: '600', color: '#888' },
-  groupMemberName: { flex: 1, fontSize: 16, fontWeight: '600', color: '#1a1a1a' },
-  groupMemberChevron: { fontSize: 22, fontWeight: '300', color: '#bbb', marginTop: -2 },
+  groupSettingsNameInput: {
+    width: '100%',
+    minHeight: 46,
+    backgroundColor: 'rgba(255,255,255,0.08)',
+    borderRadius: 14,
+    paddingHorizontal: 16,
+    paddingVertical: 11,
+    fontSize: 16,
+    color: '#fff',
+    marginBottom: 12,
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.14)',
+    fontWeight: '600',
+  },
+  groupSettingsSaveBtn: {
+    width: '100%',
+    height: 48,
+    borderRadius: 14,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: 'rgba(255,255,255,0.18)',
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.24)',
+  },
+  groupSettingsSaveBtnDisabled: {
+    opacity: 0.42,
+  },
+  groupSettingsSaveBtnText: { color: '#fff', fontSize: 16, fontWeight: '700' },
+  groupSettingsMembersHeading: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: 'rgba(255,255,255,0.52)',
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
+    marginTop: 16,
+    marginBottom: 8,
+    alignSelf: 'flex-start',
+  },
+  groupSettingsMembersEmpty: { fontSize: 14, color: 'rgba(255,255,255,0.45)', marginBottom: 8 },
+  groupSettingsMemberRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    paddingVertical: 9,
+    paddingHorizontal: 14,
+    backgroundColor: 'rgba(255,255,255,0.07)',
+    borderRadius: 14,
+    marginBottom: 8,
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.1)',
+  },
+  groupSettingsMemberAvatar: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: 'rgba(255,255,255,0.12)',
+    overflow: 'hidden',
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.14)',
+  },
+  groupSettingsMemberAvatarImg: { width: 40, height: 40 },
+  groupSettingsMemberAvatarInitial: { fontSize: 16, fontWeight: '700', color: 'rgba(255,255,255,0.75)' },
+  groupSettingsMemberName: { flex: 1, fontSize: 16, fontWeight: '600', color: 'rgba(255,255,255,0.92)' },
+  groupSettingsMemberChevron: { fontSize: 22, fontWeight: '300', color: 'rgba(255,255,255,0.4)', marginTop: -2 },
+  groupSettingsDeleteBtn: {
+    width: '100%',
+    height: 48,
+    borderRadius: 14,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginTop: 16,
+    backgroundColor: 'rgba(224,36,94,0.22)',
+    borderWidth: 1,
+    borderColor: 'rgba(224,36,94,0.45)',
+  },
+  groupSettingsDeleteBtnText: { color: 'rgba(255,180,200,0.98)', fontSize: 16, fontWeight: '700' },
   saveBtn: {
     width: '100%', height: 50, backgroundColor: '#1a1a1a',
     borderRadius: 10, alignItems: 'center', justifyContent: 'center',
   },
   saveBtnDisabled: { backgroundColor: '#ccc' },
   saveBtnText: { color: '#fff', fontSize: 16, fontWeight: '600' },
-  eventCard: { width: SCREEN_WIDTH * 0.72, borderRadius: 12, backgroundColor: '#1a1a1a', marginBottom: 4, overflow: 'hidden' },
+  eventCard: {
+    width: SCREEN_WIDTH * 0.72,
+    borderRadius: 12,
+    backgroundColor: 'rgba(26,26,26,0.86)',
+    marginBottom: 4,
+    overflow: 'hidden',
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.13)',
+  },
   eventCardMe: { alignSelf: 'flex-end' },
   eventCardThem: { alignSelf: 'flex-start' },
   eventCardEmoji: { fontSize: 20, marginBottom: 6 },
@@ -3251,7 +3742,9 @@ const styles = StyleSheet.create({
   eventCardDesc: { fontSize: 13, color: 'rgba(255,255,255,0.6)', marginTop: 6, fontStyle: 'italic' },
   eventBtn: {
     width: 40, height: 40, borderRadius: 20,
-    backgroundColor: '#1a1a1a', alignItems: 'center', justifyContent: 'center',
+    backgroundColor: 'rgba(255,255,255,0.14)', alignItems: 'center', justifyContent: 'center',
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.18)',
   },
   plusBtnText: { fontSize: 22, color: '#fff', fontWeight: '300', lineHeight: 26 },
   actionMenuBackdrop: {
@@ -3305,16 +3798,35 @@ const styles = StyleSheet.create({
   locationSuggestion: { paddingHorizontal: 14, paddingVertical: 12 },
   locationSuggestionBorder: { borderBottomWidth: 1, borderBottomColor: '#f0f0f0' },
   locationSuggestionText: { fontSize: 13, color: '#1a1a1a', lineHeight: 18 },
+  pinnedFloatingLayer: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    zIndex: 40,
+    elevation: 40,
+  },
   // Pinned banner
   pinnedBanner: {
+    position: 'absolute',
+    left: 12,
+    right: 12,
     flexDirection: 'row', alignItems: 'center', gap: 10,
     paddingHorizontal: 14, paddingVertical: 10,
-    backgroundColor: '#fff8e1', borderBottomWidth: 1, borderBottomColor: '#ffe082',
+    overflow: 'hidden',
+    backgroundColor: 'transparent',
+    borderWidth: 1,
+    borderColor: 'rgba(245,166,35,0.36)',
+    borderRadius: 14,
+  },
+  pinnedEventTint: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: 'rgba(245,166,35,0.16)',
   },
   pinnedIcon: { fontSize: 16 },
-  pinnedLabel: { fontSize: 10, fontWeight: '700', color: '#f5a623', textTransform: 'uppercase', letterSpacing: 0.5 },
-  pinnedTitle: { fontSize: 13, fontWeight: '600', color: '#1a1a1a' },
-  pinnedDate: { fontSize: 11, color: '#888' },
+  pinnedLabel: { fontSize: 10, fontWeight: '700', color: 'rgba(255,214,145,0.95)', textTransform: 'uppercase', letterSpacing: 0.5 },
+  pinnedTitle: { fontSize: 13, fontWeight: '600', color: 'rgba(255,255,255,0.92)' },
+  pinnedDate: { fontSize: 11, color: 'rgba(255,255,255,0.65)' },
   // Event card extras
   eventCardImage: { width: '100%', height: 130 },
   eventCardBody: { gap: 2, padding: 12 },
@@ -3349,9 +3861,11 @@ const styles = StyleSheet.create({
   },
   // Poll widget
   pollCard: {
-    width: SCREEN_WIDTH * 0.72, backgroundColor: '#1a1a1a',
+    width: SCREEN_WIDTH * 0.72, backgroundColor: 'rgba(26,26,26,0.86)',
     borderRadius: 14, padding: 14, marginBottom: 4,
     alignSelf: 'flex-start',
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.13)',
   },
   pollEmoji: { fontSize: 18, marginBottom: 4 },
   pollQuestion: { fontSize: 15, fontWeight: '700', color: '#fff', marginBottom: 10 },
@@ -3395,36 +3909,36 @@ const styles = StyleSheet.create({
     borderRadius: 16,
     padding: 12,
     marginBottom: 4,
-    backgroundColor: '#fff',
+    backgroundColor: 'rgba(255,250,240,0.14)',
     borderWidth: 1,
-    borderColor: '#e8e8e8',
+    borderColor: 'rgba(234,223,202,0.35)',
   },
   availabilityCardMe: { alignSelf: 'flex-end' },
   availabilityCardThem: { alignSelf: 'flex-start' },
   availabilityEyebrow: {
     fontSize: 11,
     fontWeight: '700',
-    color: '#777',
+    color: 'rgba(255,255,255,0.68)',
     textTransform: 'uppercase',
     letterSpacing: 0.8,
     marginBottom: 4,
   },
-  availabilityTitle: { fontSize: 15, fontWeight: '800', color: '#1a1a1a' },
-  availabilitySubtitle: { fontSize: 11, color: '#777', marginTop: 3, marginBottom: 8 },
+  availabilityTitle: { fontSize: 15, fontWeight: '800', color: 'rgba(255,255,255,0.95)' },
+  availabilitySubtitle: { fontSize: 11, color: 'rgba(255,255,255,0.66)', marginTop: 3, marginBottom: 8 },
   availabilityBestFit: {
     borderRadius: 10,
     paddingHorizontal: 10,
     paddingVertical: 8,
     marginBottom: 8,
-    backgroundColor: '#f6f1e7',
+    backgroundColor: 'rgba(246,241,231,0.2)',
     borderWidth: 1,
-    borderColor: '#eadfca',
+    borderColor: 'rgba(234,223,202,0.45)',
   },
   availabilityBestFitLabel: { fontSize: 10, fontWeight: '700', color: '#8b6f47', marginBottom: 3, textTransform: 'uppercase' },
   availabilityBestFitRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
-  availabilityBestFitText: { flex: 1, fontSize: 13, fontWeight: '700', color: '#1a1a1a' },
+  availabilityBestFitText: { flex: 1, fontSize: 13, fontWeight: '700', color: 'rgba(255,255,255,0.9)' },
   availabilityBestFitCount: { fontSize: 12, fontWeight: '800', color: '#8b6f47' },
-  availabilityHint: { fontSize: 12, color: '#666', marginBottom: 8 },
+  availabilityHint: { fontSize: 12, color: 'rgba(255,255,255,0.62)', marginBottom: 8 },
   availabilityOption: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -3433,12 +3947,14 @@ const styles = StyleSheet.create({
     paddingHorizontal: 10,
     paddingVertical: 8,
     marginBottom: 6,
-    backgroundColor: '#f7f7f7',
+    backgroundColor: 'rgba(255,255,255,0.12)',
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.16)',
   },
-  availabilityOptionSelected: { backgroundColor: '#1a1a1a' },
-  availabilityOptionLabel: { fontSize: 13, fontWeight: '700', color: '#1a1a1a' },
+  availabilityOptionSelected: { backgroundColor: 'rgba(26,26,26,0.88)', borderColor: 'rgba(255,255,255,0.22)' },
+  availabilityOptionLabel: { fontSize: 13, fontWeight: '700', color: 'rgba(255,255,255,0.93)' },
   availabilityOptionLabelSelected: { color: '#fff' },
-  availabilityOptionMeta: { fontSize: 10, color: '#888', marginTop: 2 },
+  availabilityOptionMeta: { fontSize: 10, color: 'rgba(255,255,255,0.58)', marginTop: 2 },
   availabilityOptionMetaSelected: { color: 'rgba(255,255,255,0.55)' },
   availabilityFacesRow: {
     flexDirection: 'row',
@@ -3450,7 +3966,7 @@ const styles = StyleSheet.create({
     borderRadius: 12,
     borderWidth: 2,
     overflow: 'hidden',
-    backgroundColor: '#dde6dd',
+    backgroundColor: 'rgba(214,230,214,0.9)',
   },
   availabilityFaceOverlap: { marginLeft: -8 },
   availabilityFaceImg: { width: '100%', height: '100%' },
@@ -3460,11 +3976,11 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     backgroundColor: '#dde6dd',
   },
-  availabilityFaceFallbackSelected: { backgroundColor: '#555' },
+  availabilityFaceFallbackSelected: { backgroundColor: 'rgba(90,90,90,0.95)' },
   availabilityFaceInitial: { fontSize: 9, fontWeight: '800', color: '#3a5c3a' },
   availabilityFaceInitialSelected: { color: '#fff' },
   availabilityFaceMore: {
-    backgroundColor: '#c0cfc0',
+    backgroundColor: 'rgba(192,207,192,0.9)',
     alignItems: 'center',
     justifyContent: 'center',
   },
@@ -3478,12 +3994,12 @@ const styles = StyleSheet.create({
   availabilitySlotCount: {
     fontSize: 12,
     fontWeight: '800',
-    color: '#555',
+    color: 'rgba(255,255,255,0.75)',
     minWidth: 14,
     textAlign: 'center',
   },
   availabilitySlotCountSelected: { color: '#fff' },
-  availabilityFooter: { fontSize: 11, color: '#777', marginTop: 2 },
+  availabilityFooter: { fontSize: 11, color: 'rgba(255,255,255,0.66)', marginTop: 2 },
   availabilityComposerLabel: { fontSize: 15, fontWeight: '700', color: '#1a1a1a', marginBottom: 6 },
   availabilityComposerHint: { fontSize: 13, color: '#777', marginBottom: 12, lineHeight: 18 },
   availabilityComposerRule: { fontSize: 12, color: '#888', marginBottom: 12 },
@@ -3582,23 +4098,23 @@ const styles = StyleSheet.create({
     borderRadius: 16,
     padding: 12,
     marginBottom: 4,
-    backgroundColor: '#f4f7f4',
+    backgroundColor: 'rgba(90,122,90,0.19)',
     borderWidth: 1,
-    borderColor: '#c8dcc8',
+    borderColor: 'rgba(200,220,200,0.4)',
   },
   groupPlanCardMe: { alignSelf: 'flex-end' },
   groupPlanCardThem: { alignSelf: 'flex-start' },
   groupPlanEyebrow: {
     fontSize: 11,
     fontWeight: '700',
-    color: '#5a7a5a',
+    color: 'rgba(206,232,206,0.95)',
     textTransform: 'uppercase',
     letterSpacing: 0.8,
     marginBottom: 4,
   },
-  groupPlanTitle: { fontSize: 15, fontWeight: '800', color: '#1a1a1a' },
-  groupPlanLocationLine: { fontSize: 12, color: '#555', marginTop: 4, marginBottom: 2 },
-  groupPlanDetailsLine: { fontSize: 10, color: '#666', lineHeight: 13, marginBottom: 6 },
+  groupPlanTitle: { fontSize: 15, fontWeight: '800', color: 'rgba(255,255,255,0.94)' },
+  groupPlanLocationLine: { fontSize: 12, color: 'rgba(255,255,255,0.72)', marginTop: 4, marginBottom: 2 },
+  groupPlanDetailsLine: { fontSize: 10, color: 'rgba(255,255,255,0.64)', lineHeight: 13, marginBottom: 6 },
   groupPlanDetailsFieldLabel: { fontSize: 11, color: '#888', marginBottom: 4, fontWeight: '600' },
   groupPlanDetailsInput: {
     width: '100%',
@@ -3616,18 +4132,20 @@ const styles = StyleSheet.create({
     flex: 1,
     paddingVertical: 8,
     borderRadius: 10,
-    backgroundColor: '#e4ebe4',
+    backgroundColor: 'rgba(220,236,220,0.22)',
+    borderWidth: 1,
+    borderColor: 'rgba(200,220,200,0.34)',
     alignItems: 'center',
   },
-  groupPlanPillSelected: { backgroundColor: '#1a1a1a' },
-  groupPlanPillLabel: { fontSize: 12, fontWeight: '700', color: '#2d4a2d' },
+  groupPlanPillSelected: { backgroundColor: 'rgba(26,26,26,0.85)', borderColor: 'rgba(255,255,255,0.22)' },
+  groupPlanPillLabel: { fontSize: 12, fontWeight: '700', color: 'rgba(255,255,255,0.88)' },
   groupPlanPillLabelSelected: { color: '#fff' },
   groupPlanWhoRow: {
     flexDirection: 'column',
     marginTop: 6,
     gap: 4,
   },
-  groupPlanWhoLabel: { fontSize: 11, fontWeight: '700', color: '#555' },
+  groupPlanWhoLabel: { fontSize: 11, fontWeight: '700', color: 'rgba(255,255,255,0.7)' },
   groupPlanVotersWrap: {
     flexDirection: 'row',
     flexWrap: 'wrap',
@@ -3637,24 +4155,26 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: 5,
-    backgroundColor: 'rgba(0,0,0,0.06)',
+    backgroundColor: 'rgba(255,255,255,0.1)',
     borderRadius: 20,
     paddingVertical: 3,
     paddingHorizontal: 7,
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.14)',
   },
   groupPlanVoterAvatar: {
     width: 20,
     height: 20,
     borderRadius: 10,
-    backgroundColor: '#dfe8df',
+    backgroundColor: 'rgba(213,230,213,0.84)',
     overflow: 'hidden',
     alignItems: 'center',
     justifyContent: 'center',
   },
   groupPlanVoterAvatarImg: { width: 20, height: 20 },
   groupPlanVoterAvatarInitial: { fontSize: 9, fontWeight: '800', color: '#4a5c4a' },
-  groupPlanVoterUsername: { fontSize: 12, fontWeight: '600', color: '#333', maxWidth: 90 },
-  groupPlanVoterOverflow: { fontSize: 12, fontWeight: '600', color: '#888' },
+  groupPlanVoterUsername: { fontSize: 12, fontWeight: '600', color: 'rgba(255,255,255,0.84)', maxWidth: 90 },
+  groupPlanVoterOverflow: { fontSize: 12, fontWeight: '600', color: 'rgba(255,255,255,0.58)' },
   groupPlanSaveToMine: {
     alignSelf: 'flex-start',
     marginTop: 10,
@@ -3679,15 +4199,24 @@ const styles = StyleSheet.create({
     flexDirection: 'row', alignItems: 'center', gap: 6,
     paddingHorizontal: 16, paddingVertical: 4,
   },
-  typingText: { fontSize: 12, color: '#aaa', fontStyle: 'italic' },
-  typingDots: { fontSize: 12, color: '#aaa', letterSpacing: 2 },
+  typingText: { fontSize: 12, color: 'rgba(255,255,255,0.55)', fontStyle: 'italic' },
+  typingDots: { fontSize: 12, color: 'rgba(255,255,255,0.55)', letterSpacing: 2 },
   pinnedPlanCard: {
-    backgroundColor: '#f0f7f0',
-    borderBottomWidth: 1,
-    borderBottomColor: '#c0d8c0',
+    position: 'absolute',
+    left: 12,
+    right: 12,
+    backgroundColor: 'transparent',
+    overflow: 'hidden',
+    borderWidth: 1,
+    borderColor: 'rgba(200,220,200,0.4)',
+    borderRadius: 14,
     paddingHorizontal: 14,
     paddingTop: 10,
     paddingBottom: 12,
+  },
+  pinnedPlanTint: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: 'rgba(90,122,90,0.2)',
   },
   pinnedPlanHeaderRow: {
     flexDirection: 'row',
@@ -3698,11 +4227,11 @@ const styles = StyleSheet.create({
   pinnedPlanEyebrow: {
     fontSize: 11,
     fontWeight: '700',
-    color: '#4a7a4a',
+    color: 'rgba(206,232,206,0.95)',
     textTransform: 'uppercase',
     letterSpacing: 0.5,
   },
-  pinnedPlanUnpinBtn: { fontSize: 14, color: '#888', fontWeight: '600' },
-  pinnedPlanTitle: { fontSize: 15, fontWeight: '800', color: '#1a1a1a', marginBottom: 2 },
-  pinnedPlanMeta: { fontSize: 12, color: '#555', marginBottom: 2 },
+  pinnedPlanUnpinBtn: { fontSize: 14, color: 'rgba(255,255,255,0.62)', fontWeight: '600' },
+  pinnedPlanTitle: { fontSize: 15, fontWeight: '800', color: 'rgba(255,255,255,0.92)', marginBottom: 2 },
+  pinnedPlanMeta: { fontSize: 12, color: 'rgba(255,255,255,0.7)', marginBottom: 2 },
 });

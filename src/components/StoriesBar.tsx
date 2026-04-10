@@ -1,18 +1,8 @@
 import React, { useEffect, useState } from 'react';
-import {
-  View,
-  Text,
-  Image,
-  TouchableOpacity,
-  FlatList,
-  StyleSheet,
-  Modal,
-  Dimensions,
-  StatusBar,
-  ActivityIndicator,
-  Alert,
-} from 'react-native';
+import { View, Text, TouchableOpacity, FlatList, StyleSheet, Modal, Dimensions, StatusBar, ActivityIndicator, Alert } from 'react-native';
+import { Image } from 'expo-image';
 import * as ImagePicker from 'expo-image-picker';
+import * as ImageManipulator from 'expo-image-manipulator';
 import * as FileSystem from 'expo-file-system/legacy';
 import { decode } from 'base64-arraybuffer';
 import { supabase } from '../lib/supabase';
@@ -107,10 +97,18 @@ export default function StoriesBar() {
     try {
       const { data: { user } } = await supabase.auth.getUser();
       if (!user) throw new Error('Not logged in');
-      const fileExt = storyImage.split('.').pop()?.toLowerCase() ?? 'jpg';
-      const filePath = `${user.id}/story_${Date.now()}.${fileExt}`;
-      const contentType = fileExt === 'jpg' ? 'image/jpeg' : `image/${fileExt}`;
-      const base64 = await FileSystem.readAsStringAsync(storyImage, { encoding: 'base64' as any });
+
+      // Resize + compress before upload to keep storage/egress usage low
+      const optimised = await ImageManipulator.manipulateAsync(
+        storyImage,
+        [{ resize: { width: 1080 } }],
+        { compress: 0.85, format: ImageManipulator.SaveFormat.JPEG },
+      );
+      const uploadUri = optimised.uri;
+
+      const filePath = `${user.id}/story_${Date.now()}.jpg`;
+      const contentType = 'image/jpeg';
+      const base64 = await FileSystem.readAsStringAsync(uploadUri, { encoding: 'base64' as any });
       const { error: uploadError } = await supabase.storage.from('media').upload(filePath, decode(base64), { contentType });
       if (uploadError) throw uploadError;
       const { data: { publicUrl } } = supabase.storage.from('media').getPublicUrl(filePath);
@@ -135,6 +133,7 @@ export default function StoriesBar() {
         data={listData}
         horizontal
         showsHorizontalScrollIndicator={false}
+        showsVerticalScrollIndicator={false}
         keyExtractor={(item) => item.user_id}
         contentContainerStyle={styles.list}
         renderItem={({ item }) => {
@@ -176,7 +175,7 @@ export default function StoriesBar() {
               <Image
                 source={{ uri: viewing.stories[storyIndex]?.media_url }}
                 style={styles.storyImage}
-                resizeMode="contain"
+                contentFit="contain"
               />
               <View style={styles.storyHeader}>
                 <View style={styles.storyAvatarCircle}>

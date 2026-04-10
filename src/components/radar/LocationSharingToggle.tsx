@@ -32,11 +32,14 @@ const styles = StyleSheet.create({
     paddingHorizontal: 10,
     paddingVertical: 5,
     borderRadius: 20,
-    backgroundColor: '#f0f0f0',
+    backgroundColor: 'rgba(255,255,255,0.12)',
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: 'rgba(255,255,255,0.28)',
     marginRight: 8,
   },
   btnActive: {
-    backgroundColor: '#e8f5e9',
+    backgroundColor: 'rgba(76, 175, 80, 0.28)',
+    borderColor: 'rgba(129, 199, 132, 0.45)',
   },
   icon: {
     fontSize: 13,
@@ -45,10 +48,10 @@ const styles = StyleSheet.create({
   label: {
     fontSize: 12,
     fontWeight: '700',
-    color: '#888',
+    color: 'rgba(255,255,255,0.8)',
     letterSpacing: 0.3,
   },
   labelActive: {
-    color: '#2e7d32',
+    color: '#a5d6a7',
   },
 });

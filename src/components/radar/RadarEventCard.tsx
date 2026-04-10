@@ -1,12 +1,7 @@
 import React, { useState } from 'react';
-import {
-  View,
-  Text,
-  Image,
-  TouchableOpacity,
-  StyleSheet,
-} from 'react-native';
-import { RadarEvent } from '../../types/radar';
+import { View, Text, TouchableOpacity, StyleSheet } from 'react-native';
+import { Image } from 'expo-image';
+import { RadarEvent, RadarGoingPreview } from '../../types/radar';
 import { parseRadarEventDate } from '../../utils/radarEventDate';
 
 type Props = {
@@ -51,6 +46,45 @@ function staticMapUrl(lat: number, lng: number): string {
   return `https://staticmap.openstreetmap.de/staticmap.php?center=${lat},${lng}&zoom=14&size=120x80&markers=${lat},${lng},red-pushpin`;
 }
 
+const FACE = 24;
+
+function GoingFaceAvatar({ avatarUrl, username }: { avatarUrl: string | null; username: string }) {
+  const [failed, setFailed] = useState(false);
+  if (avatarUrl && !failed) {
+    return (
+      <Image
+        source={{ uri: avatarUrl }}
+        style={styles.faceImg}
+        onError={() => setFailed(true)}
+      />
+    );
+  }
+  return (
+    <Text style={styles.faceInitial}>{username[0]?.toUpperCase() ?? '?'}</Text>
+  );
+}
+
+function GoingFacePile({ preview, extraCount }: { preview: RadarGoingPreview[]; extraCount: number }) {
+  if (preview.length === 0) return null;
+  return (
+    <View style={styles.facePile}>
+      {preview.map((p, i) => (
+        <View
+          key={p.userId}
+          style={[styles.faceRing, i > 0 && styles.faceRingOverlap]}
+        >
+          <GoingFaceAvatar avatarUrl={p.avatarUrl} username={p.username} />
+        </View>
+      ))}
+      {extraCount > 0 ? (
+        <View style={[styles.faceRing, styles.faceRingMore, preview.length > 0 && styles.faceRingOverlap]}>
+          <Text style={styles.faceMoreText}>+{extraCount}</Text>
+        </View>
+      ) : null}
+    </View>
+  );
+}
+
 export default function RadarEventCard({ event, myId, onPress }: Props) {
   const [imageError, setImageError] = useState(false);
 
@@ -59,6 +93,7 @@ export default function RadarEventCard({ event, myId, onPress }: Props) {
   const dateLabel = formatEventDate(event.date, event.time);
 
   const rsvpLabel = event.rsvpCount === 1 ? '1 going' : `${event.rsvpCount} going`;
+  const extraGoing = Math.max(0, event.rsvpCount - event.goingPreview.length);
 
   return (
     <TouchableOpacity style={styles.card} onPress={onPress} activeOpacity={0.8}>
@@ -68,14 +103,14 @@ export default function RadarEventCard({ event, myId, onPress }: Props) {
           <Image
             source={{ uri: event.imageUrl! }}
             style={styles.thumbnailImage}
-            resizeMode="cover"
+            contentFit="cover"
             onError={() => setImageError(true)}
           />
         ) : hasMapImage ? (
           <Image
             source={{ uri: staticMapUrl(event.locationLat!, event.locationLng!) }}
             style={styles.thumbnailImage}
-            resizeMode="cover"
+            contentFit="cover"
           />
         ) : (
           <View style={styles.thumbnailFallback}>
@@ -108,17 +143,24 @@ export default function RadarEventCard({ event, myId, onPress }: Props) {
           <Text style={styles.meta}>{dateLabel}</Text>
         ) : null}
 
-        {/* Location + RSVPs */}
-        <View style={styles.bottomRow}>
-          {event.location ? (
-            <Text style={styles.location} numberOfLines={1}>
-              📍 {event.location}
-            </Text>
-          ) : null}
-          {event.rsvpCount > 0 ? (
-            <Text style={styles.rsvp}>{rsvpLabel}</Text>
-          ) : null}
-        </View>
+        {/* Location */}
+        {event.location ? (
+          <Text style={styles.location} numberOfLines={1}>
+            📍 {event.location}
+          </Text>
+        ) : null}
+
+        {/* Going: avatars + count */}
+        {(event.goingPreview.length > 0 || event.rsvpCount > 0) && (
+          <View style={styles.goingRow}>
+            <GoingFacePile preview={event.goingPreview} extraCount={extraGoing} />
+            {event.rsvpCount > 0 ? (
+              <Text style={[styles.rsvp, event.goingPreview.length > 0 && styles.rsvpBesideFaces]}>
+                {rsvpLabel}
+              </Text>
+            ) : null}
+          </View>
+        )}
       </View>
     </TouchableOpacity>
   );
@@ -202,21 +244,59 @@ const styles = StyleSheet.create({
     color: '#555',
     marginTop: 1,
   },
-  bottomRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    marginTop: 4,
-    gap: 8,
-  },
   location: {
     fontSize: 12,
     color: '#777',
-    flex: 1,
+    marginTop: 4,
+  },
+  goingRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginTop: 8,
+    flexWrap: 'wrap',
+    gap: 8,
+  },
+  facePile: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  faceRing: {
+    width: FACE,
+    height: FACE,
+    borderRadius: FACE / 2,
+    backgroundColor: '#e8e4de',
+    borderWidth: 2,
+    borderColor: '#fff',
+    overflow: 'hidden',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  faceRingOverlap: {
+    marginLeft: -8,
+  },
+  faceRingMore: {
+    backgroundColor: '#ddd8ce',
+  },
+  faceImg: {
+    width: FACE,
+    height: FACE,
+  },
+  faceInitial: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: '#666',
+  },
+  faceMoreText: {
+    fontSize: 10,
+    fontWeight: '800',
+    color: '#4a453c',
   },
   rsvp: {
     fontSize: 12,
     fontWeight: '600',
     color: '#2e7d32',
+  },
+  rsvpBesideFaces: {
+    flexShrink: 0,
   },
 });

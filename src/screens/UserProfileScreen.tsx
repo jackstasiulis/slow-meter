@@ -1,21 +1,15 @@
 import React, { useEffect, useRef, useState, useCallback } from 'react';
-import {
-  Animated,
-  View,
-  Text,
-  FlatList,
-  Image,
-  TouchableOpacity,
-  StyleSheet,
-  ActivityIndicator,
-  RefreshControl,
-  Alert,
-} from 'react-native';
+import { Animated, View, Text, TouchableOpacity, StyleSheet, ActivityIndicator, RefreshControl, Alert } from 'react-native';
+import { Image } from 'expo-image';
+import { useBottomTabBarHeight } from '@react-navigation/bottom-tabs';
 import { useRoute, useNavigation } from '@react-navigation/native';
-import { BlurView } from 'expo-blur';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { Ionicons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
 import { supabase } from '../lib/supabase';
+import { fetchProfileLinkCount, fetchProfileLinkPartnerIds } from '../lib/profileLinks';
 import ProfileHeroHeader from '../components/profile/ProfileHeroHeader';
+import ProfileMaskedBlur from '../components/profile/ProfileMaskedBlur';
 import ProfileLinksSheet from '../components/profile/ProfileLinksSheet';
 import {
   PROFILE_CARD_HEIGHT,
@@ -24,7 +18,12 @@ import {
   PROFILE_GRID_H_PAD,
   PROFILE_GRID_ROW_GAP,
   PROFILE_HERO_HEIGHT,
+  PROFILE_CONTENT_TOP_OFFSET,
+  PROFILE_MESSAGE_ACTION_SIZE,
+  PROFILE_SCRIM_SCROLL_HEIGHT,
+  PROFILE_SCRIM_TOP,
 } from '../components/profile/constants';
+import { navigateToUserProfile } from '../navigation/navigateToUserProfile';
 
 type Profile = {
   id: string;
@@ -41,6 +40,8 @@ type LinkStatus = 'none' | 'pending_sent' | 'pending_received' | 'linked';
 export default function UserProfileScreen() {
   const route = useRoute<any>();
   const navigation = useNavigation<any>();
+  const tabBarHeight = useBottomTabBarHeight();
+  const insets = useSafeAreaInsets();
   const scrollY = useRef(new Animated.Value(0)).current;
   const { userId } = route.params;
 
@@ -57,18 +58,27 @@ export default function UserProfileScreen() {
   const [linksLoading, setLinksLoading] = useState(false);
   const contentGlassTranslateY = Animated.multiply(scrollY, -1);
 
+  // Same fade as own-profile •••: stays visible until the name nears the top, then eases out.
+  const overflowFadeStart = Math.round(PROFILE_HERO_HEIGHT * 0.28) + Math.round(insets.top * 0.2);
+  const overflowFadeEnd = overflowFadeStart + Math.round(PROFILE_HERO_HEIGHT * 0.09);
+  const fixedCloseOpacity = scrollY.interpolate({
+    inputRange: [0, overflowFadeStart, overflowFadeEnd],
+    outputRange: [1, 1, 0],
+    extrapolate: 'clamp',
+  });
+
   async function load() {
     const { data: { user } } = await supabase.auth.getUser();
     if (!user) return;
     setMyId(user.id);
 
-    const [{ data: profileData }, { data: postsData }, { count: lc }] = await Promise.all([
+    const [{ data: profileData }, { data: postsData }, linkCount] = await Promise.all([
       supabase.from('users').select('id, username, display_name, avatar_url, cover_url, bio').eq('id', userId).single(),
       supabase.from('posts').select('*, user:users!posts_user_id_fkey(id, username, avatar_url)').eq('user_id', userId).order('created_at', { ascending: false }),
-      supabase.from('links').select('*', { count: 'exact', head: true }).or(`user_a_id.eq.${userId},user_b_id.eq.${userId}`),
+      fetchProfileLinkCount(userId),
     ]);
 
-    setProfile(profileData ? { ...profileData, link_count: lc ?? 0 } : null);
+    setProfile(profileData ? { ...profileData, link_count: linkCount } : null);
     setPosts(postsData ?? []);
 
     // Check link status
@@ -103,12 +113,7 @@ export default function UserProfileScreen() {
     setLinksLoading(true);
     setLinkUsers([]);
 
-    const { data: rows } = await supabase
-      .from('links')
-      .select('user_a_id, user_b_id')
-      .or(`user_a_id.eq.${userId},user_b_id.eq.${userId}`);
-
-    const otherIds = (rows ?? []).map((r: any) => r.user_a_id === userId ? r.user_b_id : r.user_a_id);
+    const otherIds = await fetchProfileLinkPartnerIds(userId);
 
     if (otherIds.length === 0) {
       setLinkUsers([]);
@@ -249,35 +254,35 @@ export default function UserProfileScreen() {
     ]);
   }
 
-  function renderLinkButton() {
+  function renderLinkPrimary() {
     if (myId === userId) return null;
     switch (linkStatus) {
       case 'none':
         return (
-          <TouchableOpacity style={styles.linkBtn} onPress={sendLinkRequest} disabled={actionLoading}>
+          <TouchableOpacity style={styles.primaryLinkBtn} onPress={sendLinkRequest} disabled={actionLoading}>
             <Text style={styles.linkBtnText}>Link</Text>
           </TouchableOpacity>
         );
       case 'pending_sent':
         return (
-          <TouchableOpacity style={styles.requestedBtn} onPress={cancelLinkRequest} disabled={actionLoading}>
+          <TouchableOpacity style={styles.primaryRequestedBtn} onPress={cancelLinkRequest} disabled={actionLoading}>
             <Text style={styles.requestedBtnText}>Requested</Text>
           </TouchableOpacity>
         );
       case 'pending_received':
         return (
           <View style={styles.requestActions}>
-            <TouchableOpacity style={styles.acceptBtn} onPress={acceptLinkRequest} disabled={actionLoading}>
+            <TouchableOpacity style={styles.acceptBtnWide} onPress={acceptLinkRequest} disabled={actionLoading}>
               <Text style={styles.acceptBtnText}>Accept</Text>
             </TouchableOpacity>
-            <TouchableOpacity style={styles.declineBtn} onPress={declineLinkRequest} disabled={actionLoading}>
+            <TouchableOpacity style={styles.declineBtnCompact} onPress={declineLinkRequest} disabled={actionLoading}>
               <Text style={styles.declineBtnText}>Decline</Text>
             </TouchableOpacity>
           </View>
         );
       case 'linked':
         return (
-          <TouchableOpacity style={styles.linkedBtn} onPress={removeLink} disabled={actionLoading}>
+          <TouchableOpacity style={styles.primaryLinkedBtn} onPress={removeLink} disabled={actionLoading}>
             <Text style={styles.linkedBtnText}>Linked</Text>
           </TouchableOpacity>
         );
@@ -289,12 +294,12 @@ export default function UserProfileScreen() {
   return (
     <View style={styles.screen}>
       {profile?.cover_url ? (
-        <Image source={{ uri: profile.cover_url }} style={styles.backgroundImage} resizeMode="cover" />
+        <Image source={{ uri: profile.cover_url }} style={styles.backgroundImage} contentFit="cover" />
       ) : (
         <View style={styles.backgroundFallback} />
       )}
       <LinearGradient
-        colors={['rgba(0,0,0,0.15)', 'rgba(0,0,0,0.38)', 'rgba(0,0,0,0.72)']}
+        colors={['rgba(0,0,0,0.1)', 'rgba(0,0,0,0.32)', 'rgba(0,0,0,0.65)']}
         start={{ x: 0.5, y: 0 }}
         end={{ x: 0.5, y: 1 }}
         style={styles.backgroundGradient}
@@ -302,33 +307,45 @@ export default function UserProfileScreen() {
       <Animated.View
         pointerEvents="none"
         style={[
-          styles.contentGlassLayer,
+          styles.contentScrimLayer,
           { transform: [{ translateY: contentGlassTranslateY }] },
         ]}
       >
-        <BlurView intensity={10} tint="dark" style={styles.contentGlassBlurSoft} />
-        <BlurView intensity={22} tint="dark" style={styles.contentGlassBlurMid} />
-        <BlurView intensity={40} tint="dark" style={styles.contentGlassBlurStrong} />
-        <LinearGradient
-          colors={[
-            'rgba(255,255,255,0)',
-            'rgba(10,10,10,0.04)',
-            'rgba(10,10,10,0.12)',
-            'rgba(10,10,10,0.24)',
-            'rgba(10,10,10,0.36)',
-          ]}
-          start={{ x: 0.5, y: 0 }}
-          end={{ x: 0.5, y: 1 }}
-          style={styles.contentGlassGradient}
-        />
+        <ProfileMaskedBlur />
       </Animated.View>
+
+      {myId != null && myId !== userId ? (
+        <Animated.View
+          style={[styles.closeBtnWrap, { top: insets.top + 12, opacity: fixedCloseOpacity }]}
+        >
+          <TouchableOpacity
+            accessibilityRole="button"
+            accessibilityLabel="Close profile"
+            style={styles.closeBtn}
+            onPress={() => {
+              if (navigation.canGoBack()) {
+                navigation.goBack();
+              } else {
+                navigation.navigate('MainTabs');
+              }
+            }}
+            activeOpacity={0.85}
+          >
+            <Ionicons name="close" size={22} color="#fff" />
+          </TouchableOpacity>
+        </Animated.View>
+      ) : null}
 
       <Animated.FlatList
         data={posts}
         keyExtractor={(item) => item.id}
+        showsVerticalScrollIndicator={false}
         numColumns={2}
         columnWrapperStyle={styles.gridRow}
-        contentContainerStyle={styles.gridListContent}
+        contentContainerStyle={[
+          styles.gridListContent,
+          { paddingTop: PROFILE_CONTENT_TOP_OFFSET, paddingBottom: tabBarHeight + 20 },
+        ]}
         refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor="#fff" />}
         style={styles.container}
         ListHeaderComponent={
@@ -343,14 +360,16 @@ export default function UserProfileScreen() {
               { key: 'links', value: profile?.link_count ?? 0, label: 'Links', onPress: openLinks },
             ]}
             actionRow={
-              <View style={styles.actions}>
-                {renderLinkButton()}
-                {myId !== userId && (
-                  <TouchableOpacity style={styles.messageBtn} onPress={openMessage}>
-                    <Text style={styles.messageBtnText}>Message</Text>
+              myId === userId ? null : linkStatus === 'pending_received' ? (
+                <View style={styles.actions}>{renderLinkPrimary()}</View>
+              ) : (
+                <View style={styles.actions}>
+                  <View style={styles.primaryCtaSlot}>{renderLinkPrimary()}</View>
+                  <TouchableOpacity style={styles.messageIconBtn} onPress={openMessage} accessibilityLabel="Message">
+                    <Ionicons name="chatbubble-ellipses-outline" size={22} color="#fff" />
                   </TouchableOpacity>
-                )}
-              </View>
+                </View>
+              )
             }
           />
         }
@@ -359,7 +378,7 @@ export default function UserProfileScreen() {
             style={styles.gridItem}
             onPress={() => navigation.navigate('PostDetail', { post: item })}
           >
-            <Image source={{ uri: item.media_url }} style={styles.gridImage} resizeMode="cover" />
+            <Image source={{ uri: item.media_url }} style={styles.gridImage} contentFit="cover" />
           </TouchableOpacity>
         )}
         ListEmptyComponent={
@@ -381,7 +400,7 @@ export default function UserProfileScreen() {
         onClose={() => setLinksModal(false)}
         onPressUser={(id) => {
           setLinksModal(false);
-          navigation.navigate('UserProfile', { userId: id });
+          navigateToUserProfile(navigation, id);
         }}
       />
     </View>
@@ -402,59 +421,107 @@ const styles = StyleSheet.create({
   backgroundGradient: {
     ...StyleSheet.absoluteFillObject,
   },
-  contentGlassLayer: {
+  contentScrimLayer: {
     position: 'absolute',
     left: 0,
     right: 0,
-    top: Math.round(PROFILE_HERO_HEIGHT * 0.48),
-    height: PROFILE_HERO_HEIGHT + 2400,
+    top: PROFILE_SCRIM_TOP,
+    height: PROFILE_SCRIM_SCROLL_HEIGHT,
+    overflow: 'hidden',
   },
-  contentGlassBlurSoft: {
+  closeBtnWrap: {
     position: 'absolute',
-    left: 0,
-    right: 0,
-    top: 0,
-    height: 180,
-    opacity: 0.16,
+    left: 16,
+    zIndex: 20,
   },
-  contentGlassBlurMid: {
-    position: 'absolute',
-    left: 0,
-    right: 0,
-    top: 70,
-    height: 280,
-    opacity: 0.28,
-  },
-  contentGlassBlurStrong: {
-    position: 'absolute',
-    left: 0,
-    right: 0,
-    top: 160,
-    bottom: 0,
-    opacity: 0.42,
-  },
-  contentGlassGradient: {
-    position: 'absolute',
-    left: 0,
-    right: 0,
-    top: 0,
-    bottom: 0,
+  closeBtn: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: 'rgba(255,255,255,0.2)',
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.35)',
   },
   container: { flex: 1, backgroundColor: 'transparent' },
-  actions: { flexDirection: 'row', gap: 10, flexWrap: 'wrap', justifyContent: 'center' },
-  linkBtn: { paddingHorizontal: 24, paddingVertical: 11, backgroundColor: '#fff', borderRadius: 999, minWidth: 124, alignItems: 'center' },
+  actions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    width: '100%',
+  },
+  primaryCtaSlot: { flex: 1, minWidth: 0 },
+  primaryLinkBtn: {
+    width: '100%',
+    minHeight: 46,
+    paddingVertical: 12,
+    paddingHorizontal: 16,
+    backgroundColor: '#fff',
+    borderRadius: 999,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
   linkBtnText: { fontSize: 15, fontWeight: '700', color: '#1a1a1a' },
-  requestedBtn: { paddingHorizontal: 24, paddingVertical: 11, backgroundColor: 'rgba(255,255,255,0.3)', borderRadius: 999, minWidth: 124, alignItems: 'center', borderWidth: 1, borderColor: 'rgba(255,255,255,0.45)' },
+  primaryRequestedBtn: {
+    width: '100%',
+    minHeight: 46,
+    paddingVertical: 12,
+    paddingHorizontal: 16,
+    backgroundColor: 'rgba(255,255,255,0.3)',
+    borderRadius: 999,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.45)',
+  },
   requestedBtnText: { fontSize: 15, fontWeight: '700', color: '#fff' },
-  linkedBtn: { paddingHorizontal: 24, paddingVertical: 11, backgroundColor: 'rgba(255,255,255,0.22)', borderRadius: 999, minWidth: 124, alignItems: 'center', borderWidth: 1, borderColor: 'rgba(255,255,255,0.55)' },
+  primaryLinkedBtn: {
+    width: '100%',
+    minHeight: 46,
+    paddingVertical: 12,
+    paddingHorizontal: 16,
+    backgroundColor: 'rgba(255,255,255,0.22)',
+    borderRadius: 999,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.55)',
+  },
   linkedBtnText: { fontSize: 15, fontWeight: '700', color: '#fff' },
-  requestActions: { flexDirection: 'row', gap: 8 },
-  acceptBtn: { paddingHorizontal: 20, paddingVertical: 11, backgroundColor: '#fff', borderRadius: 999, minWidth: 110, alignItems: 'center' },
+  requestActions: { flexDirection: 'row', gap: 10, width: '100%', alignItems: 'center' },
+  acceptBtnWide: {
+    flex: 1,
+    minHeight: 46,
+    paddingVertical: 12,
+    paddingHorizontal: 16,
+    backgroundColor: '#fff',
+    borderRadius: 999,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
   acceptBtnText: { fontSize: 15, fontWeight: '700', color: '#1a1a1a' },
-  declineBtn: { paddingHorizontal: 20, paddingVertical: 11, borderWidth: 1, borderColor: 'rgba(255,255,255,0.7)', borderRadius: 999, minWidth: 110, alignItems: 'center' },
+  declineBtnCompact: {
+    paddingHorizontal: 18,
+    minHeight: 46,
+    paddingVertical: 12,
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.7)',
+    borderRadius: 999,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
   declineBtnText: { fontSize: 15, fontWeight: '700', color: '#fff' },
-  messageBtn: { paddingHorizontal: 24, paddingVertical: 11, borderWidth: 1, borderColor: 'rgba(255,255,255,0.75)', borderRadius: 999, minWidth: 124, alignItems: 'center' },
-  messageBtnText: { fontSize: 15, fontWeight: '700', color: '#fff' },
+  messageIconBtn: {
+    width: PROFILE_MESSAGE_ACTION_SIZE,
+    height: PROFILE_MESSAGE_ACTION_SIZE,
+    borderRadius: PROFILE_MESSAGE_ACTION_SIZE / 2,
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.75)',
+    backgroundColor: 'rgba(0,0,0,0.35)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
   gridListContent: { paddingBottom: 24 },
   gridRow: {
     paddingHorizontal: PROFILE_GRID_H_PAD,

@@ -1,14 +1,8 @@
 import React from 'react';
-import {
-  ActivityIndicator,
-  FlatList,
-  Image,
-  Modal,
-  StyleSheet,
-  Text,
-  TouchableOpacity,
-  View,
-} from 'react-native';
+import { ActivityIndicator, FlatList, Modal, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { Image } from 'expo-image';
+import { BlurView } from 'expo-blur';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 export type ProfileLinkUser = {
   id: string;
@@ -33,26 +27,32 @@ export default function ProfileLinksSheet({
   onClose,
   onPressUser,
 }: ProfileLinksSheetProps) {
+  const insets = useSafeAreaInsets();
+
   return (
     <Modal visible={visible} animationType="slide" transparent onRequestClose={onClose}>
       <View style={styles.modalOverlay}>
         <TouchableOpacity style={styles.modalBackdrop} activeOpacity={1} onPress={onClose} />
-        <View style={styles.modalSheet}>
+        <View style={[styles.modalSheet, { paddingBottom: Math.max(insets.bottom, 20) }]}>
+          <BlurView intensity={55} tint="dark" style={StyleSheet.absoluteFill} />
+          <View style={styles.sheetGlassTint} pointerEvents="none" />
           <View style={styles.handle} />
           <Text style={styles.modalTitle}>{title}</Text>
           {loading ? (
-            <ActivityIndicator color="#1a1a1a" style={styles.loading} />
+            <ActivityIndicator color="#fff" style={styles.loading} />
           ) : users.length === 0 ? (
             <Text style={styles.emptyList}>No links yet</Text>
           ) : (
             <FlatList
               data={users}
               keyExtractor={(u) => u.id}
+              showsVerticalScrollIndicator={false}
               contentContainerStyle={styles.listContent}
               renderItem={({ item }) => (
                 <TouchableOpacity
                   style={styles.userRow}
                   onPress={() => onPressUser(item.id)}
+                  activeOpacity={0.85}
                 >
                   <View style={styles.userAvatar}>
                     {item.avatar_url ? (
@@ -73,52 +73,71 @@ export default function ProfileLinksSheet({
 }
 
 const styles = StyleSheet.create({
-  modalOverlay: { flex: 1, justifyContent: 'flex-end', backgroundColor: 'rgba(0,0,0,0.3)' },
+  modalOverlay: {
+    flex: 1,
+    justifyContent: 'flex-end',
+    backgroundColor: 'transparent',
+  },
   modalBackdrop: { flex: 1 },
   modalSheet: {
-    backgroundColor: '#fff',
+    maxHeight: '72%',
     borderTopLeftRadius: 20,
     borderTopRightRadius: 20,
-    maxHeight: '70%',
-    paddingBottom: 32,
+    overflow: 'hidden',
+  },
+  sheetGlassTint: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: 'rgba(255,255,255,0.12)',
+    borderTopLeftRadius: 20,
+    borderTopRightRadius: 20,
   },
   handle: {
-    width: 36,
+    width: 40,
     height: 4,
     borderRadius: 2,
-    backgroundColor: '#ddd',
+    backgroundColor: 'rgba(255,255,255,0.35)',
     alignSelf: 'center',
     marginTop: 10,
-    marginBottom: 4,
+    marginBottom: 6,
   },
   modalTitle: {
-    fontSize: 15,
+    fontSize: 17,
     fontWeight: '700',
     textAlign: 'center',
-    paddingVertical: 12,
-    color: '#1a1a1a',
+    paddingVertical: 10,
+    color: 'rgba(255,255,255,0.96)',
+    letterSpacing: -0.3,
   },
-  loading: { marginTop: 20 },
-  listContent: { paddingHorizontal: 16 },
-  emptyList: { textAlign: 'center', color: '#aaa', marginTop: 24 },
+  loading: { marginTop: 20, marginBottom: 28 },
+  listContent: { paddingHorizontal: 16, paddingBottom: 8 },
+  emptyList: {
+    textAlign: 'center',
+    color: 'rgba(255,255,255,0.62)',
+    marginTop: 20,
+    marginBottom: 36,
+    fontSize: 15,
+    fontWeight: '500',
+  },
   userRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 12,
-    paddingVertical: 10,
-    borderBottomWidth: 1,
-    borderBottomColor: '#f0f0f0',
+    gap: 14,
+    paddingVertical: 12,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: 'rgba(255,255,255,0.18)',
   },
   userAvatar: {
-    width: 42,
-    height: 42,
-    borderRadius: 21,
-    backgroundColor: '#e0e0e0',
+    width: 46,
+    height: 46,
+    borderRadius: 23,
+    backgroundColor: 'rgba(255,255,255,0.18)',
+    borderWidth: 2,
+    borderColor: 'rgba(255,255,255,0.55)',
     alignItems: 'center',
     justifyContent: 'center',
     overflow: 'hidden',
   },
-  userAvatarImg: { width: 42, height: 42 },
-  userAvatarInitial: { fontSize: 16, fontWeight: '600', color: '#888' },
-  userUsername: { fontSize: 14, fontWeight: '600', color: '#1a1a1a' },
+  userAvatarImg: { width: 46, height: 46 },
+  userAvatarInitial: { fontSize: 18, fontWeight: '700', color: '#fff' },
+  userUsername: { fontSize: 16, fontWeight: '600', color: 'rgba(255,255,255,0.95)' },
 });

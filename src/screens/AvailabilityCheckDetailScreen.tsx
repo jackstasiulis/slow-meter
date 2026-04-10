@@ -1,17 +1,9 @@
 import React, { useEffect, useState } from 'react';
-import {
-  Alert,
-  ActivityIndicator,
-  Image,
-  ScrollView,
-  StyleSheet,
-  Text,
-  TextInput,
-  TouchableOpacity,
-  View,
-} from 'react-native';
+import { Alert, ActivityIndicator, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
+import { Image } from 'expo-image';
 import { useNavigation, useRoute } from '@react-navigation/native';
 import { supabase } from '../lib/supabase';
+import { navigateToUserProfile } from '../navigation/navigateToUserProfile';
 import {
   formatAvailabilitySlotWindow,
   formatAvailabilitySubtitle,
@@ -183,7 +175,7 @@ export default function AvailabilityCheckDetailScreen() {
   const isCreator = availabilityCheck.created_by === myId;
 
   return (
-    <ScrollView style={styles.container} contentContainerStyle={styles.content}>
+    <ScrollView style={styles.container} contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
       {editingTitle ? (
         <View style={styles.titleEditor}>
           <TextInput
@@ -276,7 +268,7 @@ export default function AvailabilityCheckDetailScreen() {
                     <TouchableOpacity
                       key={voter.id}
                       style={styles.voterRow}
-                      onPress={() => navigation.navigate('UserProfile', { userId: voter.id })}
+                      onPress={() => navigateToUserProfile(navigation, voter.id)}
                     >
                       <View style={styles.voterAvatar}>
                         {voter.avatar_url ? (

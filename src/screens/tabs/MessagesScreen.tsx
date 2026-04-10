@@ -1,24 +1,13 @@
 import React, { useState, useCallback, useRef, useEffect } from 'react';
-import {
-  View,
-  Text,
-  FlatList,
-  ScrollView,
-  TouchableOpacity,
-  TextInput,
-  Modal,
-  StyleSheet,
-  ActivityIndicator,
-  Image,
-  KeyboardAvoidingView,
-  Platform,
-  RefreshControl,
-  Alert,
-  Animated,
-  Dimensions,
-} from 'react-native';
+import { View, Text, FlatList, ScrollView, TouchableOpacity, TextInput, Modal, StyleSheet, ActivityIndicator, KeyboardAvoidingView, RefreshControl, Alert, Animated, Dimensions } from 'react-native';
+import { Image } from 'expo-image';
+import { Ionicons } from '@expo/vector-icons';
+import { BlurView } from 'expo-blur';
+import { LinearGradient } from 'expo-linear-gradient';
+import { StatusBar } from 'expo-status-bar';
 import { useNavigation, useFocusEffect } from '@react-navigation/native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { supabase } from '../../lib/supabase';
 
 const SCREEN_WIDTH = Dimensions.get('window').width;
@@ -27,13 +16,20 @@ const MESSAGES_SUBTAB_KEY = '@slow_meter_messages_subtab';
 async function persistMessagesSubTab(index: number) {
   await AsyncStorage.setItem(MESSAGES_SUBTAB_KEY, index === 1 ? 'groups' : 'messages');
 }
-/** Space so list scroll ends above the floating add button */
-const LIST_PAD_BELOW_FAB = 88;
+/**
+ * Must match floating dock in App.tsx (`FloatingTabBar` + `FLOATING_TAB_BAR_*`).
+ * `useBottomTabBarHeight()` is only the bar height; it ignores the dock’s lift above the home indicator.
+ */
+const FLOATING_DOCK_HEIGHT = 60;
+const FLOATING_DOCK_BOTTOM_OFFSET = -3;
+/** Gap from top of dock to FAB bottom. */
+const FAB_GAP_ABOVE_DOCK = 12;
+/** Space above FAB bottom so list clears the round action button. */
+const LIST_PAD_ABOVE_FAB = 58;
 
-/** Messages first (default); Groups is visually highlighted as the hub tab. */
 const MESSAGE_TABS = [
-  { label: 'Messages' as const, spotlight: false },
-  { label: 'Groups' as const, spotlight: true },
+  { label: 'Messages' as const },
+  { label: 'Groups' as const },
 ] as const;
 
 type ConversationRow = {
@@ -59,17 +55,18 @@ function timeAgo(dateStr: string) {
 }
 
 function ConvRow({ item, onPress }: { item: ConversationRow; onPress: () => void }) {
+  const isGroup = item.is_group;
   return (
-    <TouchableOpacity style={styles.row} onPress={onPress}>
-      <View style={styles.avatar}>
-        {item.is_group ? (
+    <TouchableOpacity style={styles.card} onPress={onPress} activeOpacity={0.88}>
+      <View style={[styles.avatar, isGroup && styles.groupAvatar]}>
+        {isGroup ? (
           item.avatar_url ? (
-            <Image source={{ uri: item.avatar_url }} style={styles.avatarImg} />
+            <Image source={{ uri: item.avatar_url }} style={[styles.avatarImg, styles.groupAvatarImg]} contentFit="cover" />
           ) : (
             <Text style={styles.groupIcon}>👥</Text>
           )
         ) : item.other_user?.avatar_url ? (
-          <Image source={{ uri: item.other_user.avatar_url }} style={styles.avatarImg} />
+          <Image source={{ uri: item.other_user.avatar_url }} style={styles.avatarImg} contentFit="cover" />
         ) : (
           <Text style={styles.avatarInitial}>
             {item.other_user?.username?.[0]?.toUpperCase() ?? '?'}
@@ -81,7 +78,7 @@ function ConvRow({ item, onPress }: { item: ConversationRow; onPress: () => void
           <Text style={styles.rowUsername} numberOfLines={1}>
             {item.is_group ? item.name : `@${item.other_user?.username}`}
           </Text>
-          {item.is_group && (
+          {isGroup && (
             <View style={styles.groupBadge}>
               <Text style={styles.groupBadgeText}>group</Text>
             </View>
@@ -100,11 +97,18 @@ function ConvRow({ item, onPress }: { item: ConversationRow; onPress: () => void
 
 export default function MessagesScreen() {
   const navigation = useNavigation<any>();
+  const insets = useSafeAreaInsets();
+  const topOfDockFromBottom =
+    insets.bottom + FLOATING_DOCK_BOTTOM_OFFSET + FLOATING_DOCK_HEIGHT;
+  const fabBottomOffset = topOfDockFromBottom + FAB_GAP_ABOVE_DOCK;
+  const listBottomPad = fabBottomOffset + LIST_PAD_ABOVE_FAB;
 
   // Swipeable tabs
   const scrollRef = useRef<ScrollView>(null);
   const scrollX = useRef(new Animated.Value(0)).current;
   const [activeIndex, setActiveIndex] = useState(0);
+  const activeIndexRef = useRef(activeIndex);
+  activeIndexRef.current = activeIndex;
   const prevLoadingRef = useRef(true);
 
   function goToTab(index: number) {
@@ -112,27 +116,6 @@ export default function MessagesScreen() {
     setActiveIndex(index);
     void persistMessagesSubTab(index);
   }
-
-  /** Restore Messages vs Groups when opening this screen (e.g. tapping the Messages tab). */
-  useFocusEffect(
-    useCallback(() => {
-      let cancelled = false;
-      (async () => {
-        const raw = await AsyncStorage.getItem(MESSAGES_SUBTAB_KEY);
-        if (cancelled) return;
-        const idx = raw === 'groups' ? 1 : 0;
-        setActiveIndex(idx);
-        requestAnimationFrame(() => {
-          if (!cancelled) {
-            scrollRef.current?.scrollTo({ x: idx * SCREEN_WIDTH, animated: false });
-          }
-        });
-      })();
-      return () => {
-        cancelled = true;
-      };
-    }, [])
-  );
 
   const [dms, setDms] = useState<ConversationRow[]>([]);
   const [groups, setGroups] = useState<ConversationRow[]>([]);
@@ -157,19 +140,33 @@ export default function MessagesScreen() {
   useFocusEffect(
     useCallback(() => {
       loadConversations();
+      let cancelled = false;
+      (async () => {
+        const raw = await AsyncStorage.getItem(MESSAGES_SUBTAB_KEY);
+        if (cancelled) return;
+        const idx = raw === 'groups' ? 1 : 0;
+        setActiveIndex(idx);
+        requestAnimationFrame(() => {
+          if (!cancelled) {
+            scrollRef.current?.scrollTo({ x: idx * SCREEN_WIDTH, animated: false });
+          }
+        });
+      })();
+      return () => {
+        cancelled = true;
+      };
     }, [])
   );
 
-  // After initial load, horizontal pager exists — sync scroll to stored sub-tab if focus/storage raced with loading.
+  // Initial load shows a spinner (no pager) — once lists mount, snap pager to the restored sub-tab.
   useEffect(() => {
     if (prevLoadingRef.current && !loading) {
-      prevLoadingRef.current = false;
       requestAnimationFrame(() => {
-        scrollRef.current?.scrollTo({ x: activeIndex * SCREEN_WIDTH, animated: false });
+        scrollRef.current?.scrollTo({ x: activeIndexRef.current * SCREEN_WIDTH, animated: false });
       });
     }
-    if (loading) prevLoadingRef.current = true;
-  }, [loading, activeIndex]);
+    prevLoadingRef.current = loading;
+  }, [loading]);
 
   function onRefresh() {
     setRefreshing(true);
@@ -177,7 +174,9 @@ export default function MessagesScreen() {
   }
 
   async function loadConversations() {
-    const { data: { user } } = await supabase.auth.getUser();
+    // Session is local/no round-trip; listing your own conversations only needs the user id.
+    const { data: { session } } = await supabase.auth.getSession();
+    const user = session?.user ?? null;
     if (!user) { setLoading(false); return; }
 
     function messagePreview(message: any) {
@@ -192,22 +191,25 @@ export default function MessagesScreen() {
       return undefined;
     }
 
-    // Load 1:1 DM conversations
-    const { data: dmData } = await supabase
-      .from('conversations')
-      .select(`
-        id, created_at, is_group, name, user1_id,
-        user1:users!conversations_user1_id_fkey(id, username, avatar_url),
-        user2:users!conversations_user2_id_fkey(id, username, avatar_url)
-      `)
-      .or(`user1_id.eq.${user.id},user2_id.eq.${user.id}`)
-      .eq('is_group', false);
+    // DMs and group membership are independent — run both at once.
+    const [dmResult, participantResult] = await Promise.all([
+      supabase
+        .from('conversations')
+        .select(`
+          id, created_at, is_group, name, user1_id,
+          user1:users!conversations_user1_id_fkey(id, username, avatar_url),
+          user2:users!conversations_user2_id_fkey(id, username, avatar_url)
+        `)
+        .or(`user1_id.eq.${user.id},user2_id.eq.${user.id}`)
+        .eq('is_group', false),
+      supabase
+        .from('conversation_participants')
+        .select('conversation_id')
+        .eq('user_id', user.id),
+    ]);
 
-    // Load group conversations via conversation_participants
-    const { data: participantRows } = await supabase
-      .from('conversation_participants')
-      .select('conversation_id')
-      .eq('user_id', user.id);
+    const dmData = dmResult.data;
+    const participantRows = participantResult.data;
 
     const groupIds = (participantRows ?? []).map((r: any) => r.conversation_id);
     let groupData: any[] = [];
@@ -238,19 +240,24 @@ export default function MessagesScreen() {
         if (row?.conversation_id) lastByConv[row.conversation_id] = row;
       }
     } else {
-      const fallbackRows = await Promise.all(
-        allConvs.map(async (c: any) => {
-          const { data: msgs } = await supabase
-            .from('messages')
-            .select('conversation_id, body, created_at, deleted_at, post_id, event_id, poll_id, availability_check_id, group_plan_id')
-            .eq('conversation_id', c.id)
-            .order('created_at', { ascending: false })
-            .limit(1);
-          return { id: c.id, msg: msgs?.[0] };
-        })
-      );
-      for (const fr of fallbackRows) {
-        if (fr.msg) lastByConv[fr.id] = fr.msg;
+      // Avoid N sequential round-trips if the RPC is missing or errors (still apply RLS per query).
+      const FALLBACK_CHUNK = 8;
+      for (let i = 0; i < allConvs.length; i += FALLBACK_CHUNK) {
+        const chunk = allConvs.slice(i, i + FALLBACK_CHUNK);
+        const fallbackRows = await Promise.all(
+          chunk.map(async (c: any) => {
+            const { data: msgs } = await supabase
+              .from('messages')
+              .select('conversation_id, body, created_at, deleted_at, post_id, event_id, poll_id, availability_check_id, group_plan_id')
+              .eq('conversation_id', c.id)
+              .order('created_at', { ascending: false })
+              .limit(1);
+            return { id: c.id, msg: msgs?.[0] };
+          }),
+        );
+        for (const fr of fallbackRows) {
+          if (fr.msg) lastByConv[fr.id] = fr.msg;
+        }
       }
     }
 
@@ -402,38 +409,40 @@ export default function MessagesScreen() {
     });
   }
 
-  if (loading) return <ActivityIndicator style={{ flex: 1 }} color="#1a1a1a" />;
+  if (loading) return <ActivityIndicator style={{ flex: 1, backgroundColor: '#08090a' }} color="#fff" />;
 
   const indicatorLeft = scrollX.interpolate({
     inputRange: [0, SCREEN_WIDTH],
-    outputRange: ['0%', '50%'],
+    outputRange: [3, SCREEN_WIDTH / 2 - 16],
     extrapolate: 'clamp',
   });
+
+  const fabIconName = activeIndex === 0 ? 'chatbubble-outline' : 'people-outline';
 
   return (
     <>
       <View style={styles.container}>
-        {/* Tab header */}
+        <StatusBar style="light" />
+        <LinearGradient
+          colors={['rgba(255,255,255,0.08)', 'rgba(255,255,255,0.02)', 'rgba(0,0,0,0)']}
+          locations={[0, 0.34, 1]}
+          style={styles.screenGradient}
+          pointerEvents="none"
+        />
+
+        <View style={[styles.header, { paddingTop: insets.top + 8 }]}>
+          <Text style={styles.headerTitle}>Messages</Text>
+        </View>
+
         <View style={styles.tabHeader}>
+          <Animated.View style={[styles.tabSegmentActive, { left: indicatorLeft }]} />
           {MESSAGE_TABS.map((tab, i) => (
             <TouchableOpacity key={tab.label} style={styles.tabHeaderBtn} onPress={() => goToTab(i)}>
-              {tab.spotlight ? (
-                <View style={[styles.groupsTabPill, activeIndex === i && styles.groupsTabPillActive]}>
-                  <Text
-                    style={[styles.groupsTabPillText, activeIndex === i && styles.groupsTabPillTextActive]}
-                    numberOfLines={1}
-                  >
-                    👥 {tab.label}
-                  </Text>
-                </View>
-              ) : (
-                <Text style={[styles.tabHeaderText, activeIndex === i && styles.tabHeaderTextActive]}>
-                  {tab.label}
-                </Text>
-              )}
+              <Text style={[styles.tabHeaderText, activeIndex === i && styles.tabHeaderTextActive]}>
+                {tab.label}
+              </Text>
             </TouchableOpacity>
           ))}
-          <Animated.View style={[styles.tabIndicator, { left: indicatorLeft }]} />
         </View>
 
         {/* Swipeable pages */}
@@ -442,18 +451,17 @@ export default function MessagesScreen() {
           horizontal
           pagingEnabled
           showsHorizontalScrollIndicator={false}
+          showsVerticalScrollIndicator={false}
           scrollEventThrottle={16}
           onScroll={Animated.event(
             [{ nativeEvent: { contentOffset: { x: scrollX } } }],
-            {
-              useNativeDriver: false,
-              listener: (e: any) => {
-                const x = e.nativeEvent.contentOffset.x;
-                const i = Math.round(x / SCREEN_WIDTH);
-                setActiveIndex(i);
-              },
-            }
+            { useNativeDriver: false }
           )}
+          onMomentumScrollEnd={(e) => {
+            const i = Math.round(e.nativeEvent.contentOffset.x / SCREEN_WIDTH);
+            setActiveIndex(i);
+            void persistMessagesSubTab(i);
+          }}
           style={styles.pager}
         >
           {/* Page 0: Direct messages */}
@@ -461,8 +469,9 @@ export default function MessagesScreen() {
             <FlatList
               data={dms}
               keyExtractor={(item) => item.id}
-              contentContainerStyle={styles.listWithFabPad}
-              refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} />}
+              showsVerticalScrollIndicator={false}
+              contentContainerStyle={[styles.listWithFabPad, { paddingBottom: listBottomPad, paddingTop: 14 }]}
+              refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor="#fff" />}
               ListEmptyComponent={
                 <View style={styles.empty}>
                   <Text style={styles.emptyTitle}>No messages yet</Text>
@@ -480,8 +489,9 @@ export default function MessagesScreen() {
             <FlatList
               data={groups}
               keyExtractor={(item) => item.id}
-              contentContainerStyle={styles.listWithFabPad}
-              refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} />}
+              showsVerticalScrollIndicator={false}
+              contentContainerStyle={[styles.listWithFabPad, { paddingBottom: listBottomPad, paddingTop: 14 }]}
+              refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor="#fff" />}
               ListEmptyComponent={
                 <View style={styles.empty}>
                   <Text style={styles.emptyTitle}>No groups yet</Text>
@@ -496,30 +506,17 @@ export default function MessagesScreen() {
 
         </ScrollView>
 
-        {activeIndex === 0 && (
-          <TouchableOpacity
-            style={styles.fab}
-            onPress={() => setShowNewMsg(true)}
-            activeOpacity={0.85}
-            accessibilityLabel="New message"
-            accessibilityRole="button"
-          >
-            <Text style={styles.fabPlus}>+</Text>
-            <Text style={styles.fabHint}>Message</Text>
-          </TouchableOpacity>
-        )}
-        {activeIndex === 1 && (
-          <TouchableOpacity
-            style={styles.fab}
-            onPress={() => setShowNewGroup(true)}
-            activeOpacity={0.85}
-            accessibilityLabel="New group"
-            accessibilityRole="button"
-          >
-            <Text style={styles.fabPlus}>+</Text>
-            <Text style={styles.fabHint}>Group</Text>
-          </TouchableOpacity>
-        )}
+        <TouchableOpacity
+          style={[styles.fab, { bottom: fabBottomOffset }]}
+          onPress={activeIndex === 0 ? () => setShowNewMsg(true) : () => setShowNewGroup(true)}
+          activeOpacity={0.85}
+          accessibilityLabel={activeIndex === 0 ? 'New message' : 'New group'}
+          accessibilityRole="button"
+        >
+          <BlurView intensity={35} tint="dark" style={StyleSheet.absoluteFill} />
+          <View style={styles.fabTint} />
+          <Ionicons name={fabIconName} size={24} color="#fff" />
+        </TouchableOpacity>
       </View>
 
       {/* New DM modal */}
@@ -530,9 +527,9 @@ export default function MessagesScreen() {
             <View style={styles.handle} />
             <Text style={styles.sheetTitle}>New Message</Text>
             {searching ? (
-              <ActivityIndicator style={{ marginVertical: 20 }} color="#1a1a1a" />
+              <ActivityIndicator style={{ marginVertical: 20 }} color="#fff" />
             ) : (
-              <ScrollView keyboardShouldPersistTaps="handled" style={styles.resultsList}>
+              <ScrollView keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false} style={styles.resultsList}>
                 {searchResults.length === 0 && searchQuery.trim().length > 0 && (
                   <Text style={styles.searchEmpty}>No users found</Text>
                 )}
@@ -550,7 +547,7 @@ export default function MessagesScreen() {
               <TextInput
                 style={styles.searchInput}
                 placeholder="Search by username..."
-                placeholderTextColor="#999"
+                placeholderTextColor="rgba(255,255,255,0.5)"
                 value={searchQuery}
                 onChangeText={(t) => { setSearchQuery(t); searchUsers(t, setSearchResults, setSearching); }}
                 autoCapitalize="none"
@@ -569,11 +566,11 @@ export default function MessagesScreen() {
           <View style={styles.sheet}>
             <View style={styles.handle} />
             <Text style={styles.sheetTitle}>New Group</Text>
-            <ScrollView keyboardShouldPersistTaps="handled" style={styles.resultsList}>
+            <ScrollView keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false} style={styles.resultsList}>
               <TextInput
                 style={styles.groupNameInput}
                 placeholder="Group name..."
-                placeholderTextColor="#999"
+                placeholderTextColor="rgba(255,255,255,0.5)"
                 value={groupName}
                 onChangeText={setGroupName}
               />
@@ -587,7 +584,7 @@ export default function MessagesScreen() {
                 </View>
               )}
               {groupSearching ? (
-                <ActivityIndicator color="#1a1a1a" style={{ marginVertical: 10 }} />
+                <ActivityIndicator color="#fff" style={{ marginVertical: 10 }} />
               ) : (
                 groupResults.map((u) => (
                   <TouchableOpacity key={u.id} style={styles.searchRow} onPress={() => addGroupMember(u)}>
@@ -603,7 +600,7 @@ export default function MessagesScreen() {
               <TextInput
                 style={styles.searchInput}
                 placeholder="Add people..."
-                placeholderTextColor="#999"
+                placeholderTextColor="rgba(255,255,255,0.5)"
                 value={groupQuery}
                 onChangeText={(t) => {
                   setGroupQuery(t);
@@ -631,139 +628,197 @@ export default function MessagesScreen() {
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#fafaf8' },
-  listWithFabPad: { paddingBottom: LIST_PAD_BELOW_FAB },
+  container: { flex: 1, backgroundColor: '#08090a' },
+  screenGradient: {
+    ...StyleSheet.absoluteFillObject,
+  },
+  header: {
+    paddingHorizontal: 20,
+    paddingBottom: 12,
+  },
+  headerTitle: {
+    fontSize: 30,
+    fontWeight: '800',
+    color: '#fff',
+    letterSpacing: -0.7,
+  },
+  listWithFabPad: {},
   fab: {
     position: 'absolute',
     right: 20,
-    bottom: 20,
-    minWidth: 56,
-    paddingHorizontal: 14,
-    paddingVertical: 10,
+    width: 58,
+    height: 58,
     borderRadius: 28,
-    backgroundColor: '#1a1a1a',
     alignItems: 'center',
     justifyContent: 'center',
+    overflow: 'hidden',
+    backgroundColor: 'rgba(255,255,255,0.14)',
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.3)',
     shadowColor: '#000',
     shadowOffset: { width: 0, height: 3 },
-    shadowOpacity: 0.18,
-    shadowRadius: 6,
-    elevation: 6,
+    shadowOpacity: 0.35,
+    shadowRadius: 12,
+    elevation: 8,
   },
-  fabPlus: {
-    color: '#fff',
-    fontSize: 28,
-    fontWeight: '300',
-    lineHeight: 30,
-    marginTop: -2,
+  fabTint: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: 'rgba(255,255,255,0.08)',
   },
-  fabHint: {
-    color: 'rgba(255,255,255,0.92)',
-    fontSize: 11,
-    fontWeight: '700',
-    letterSpacing: 0.3,
-    marginTop: 2,
-  },
-  row: {
-    flexDirection: 'row', alignItems: 'center',
-    padding: 14, gap: 12,
-    borderBottomWidth: 1, borderBottomColor: '#f0f0f0', backgroundColor: '#fff',
+  card: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    padding: 14,
+    gap: 12,
+    marginHorizontal: 16,
+    marginBottom: 10,
+    borderRadius: 18,
+    backgroundColor: 'rgba(255,255,255,0.08)',
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.15)',
   },
   avatar: {
-    width: 48, height: 48, borderRadius: 24,
-    backgroundColor: '#e0e0e0', alignItems: 'center', justifyContent: 'center', overflow: 'hidden',
+    width: 52,
+    height: 52,
+    borderRadius: 26,
+    backgroundColor: 'rgba(255,255,255,0.16)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    overflow: 'hidden',
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.24)',
   },
-  avatarImg: { width: 48, height: 48 },
-  avatarInitial: { fontSize: 18, fontWeight: '600', color: '#888' },
+  groupAvatar: {
+    width: 58,
+    height: 58,
+    borderRadius: 16,
+  },
+  groupAvatarImg: {
+    width: 58,
+    height: 58,
+  },
+  avatarImg: { width: 52, height: 52 },
+  avatarInitial: { fontSize: 19, fontWeight: '600', color: 'rgba(255,255,255,0.92)' },
   groupIcon: { fontSize: 24 },
   rowText: { flex: 1 },
   rowNameRow: { flexDirection: 'row', alignItems: 'center', gap: 6 },
-  rowUsername: { fontSize: 14, fontWeight: '600', color: '#1a1a1a' },
-  groupBadge: { backgroundColor: '#f0f0f0', borderRadius: 6, paddingHorizontal: 6, paddingVertical: 2 },
-  groupBadgeText: { fontSize: 10, fontWeight: '600', color: '#888', letterSpacing: 0.3 },
-  lastMessage: { fontSize: 13, color: '#888', marginTop: 2 },
-  rowTime: { fontSize: 12, color: '#aaa' },
+  rowUsername: { fontSize: 15, fontWeight: '700', color: 'rgba(255,255,255,0.96)' },
+  groupBadge: {
+    backgroundColor: 'rgba(255,255,255,0.16)',
+    borderRadius: 8,
+    paddingHorizontal: 7,
+    paddingVertical: 2,
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.22)',
+  },
+  groupBadgeText: { fontSize: 10, fontWeight: '700', color: 'rgba(255,255,255,0.82)', letterSpacing: 0.3 },
+  lastMessage: { fontSize: 13, color: 'rgba(255,255,255,0.62)', marginTop: 2 },
+  rowTime: { fontSize: 12, color: 'rgba(255,255,255,0.58)' },
   empty: { padding: 48, alignItems: 'center', gap: 8 },
-  emptyTitle: { fontSize: 17, fontWeight: '600', color: '#1a1a1a' },
-  emptySubtext: { fontSize: 14, color: '#888', textAlign: 'center' },
-  backdrop: { flex: 1, backgroundColor: 'rgba(0,0,0,0.3)' },
+  emptyTitle: { fontSize: 17, fontWeight: '600', color: '#fff' },
+  emptySubtext: { fontSize: 14, color: 'rgba(255,255,255,0.72)', textAlign: 'center' },
+  backdrop: { flex: 1, backgroundColor: 'rgba(0,0,0,0.45)' },
   sheet: {
-    backgroundColor: '#fff', borderTopLeftRadius: 20, borderTopRightRadius: 20,
-    maxHeight: '70%', paddingBottom: 24,
+    backgroundColor: '#111215',
+    borderTopLeftRadius: 20,
+    borderTopRightRadius: 20,
+    maxHeight: '70%',
+    paddingBottom: 24,
+    borderTopWidth: 1,
+    borderColor: 'rgba(255,255,255,0.12)',
   },
   handle: {
     width: 36, height: 4, borderRadius: 2,
-    backgroundColor: '#ddd', alignSelf: 'center', marginTop: 10, marginBottom: 4,
+    backgroundColor: 'rgba(255,255,255,0.35)',
+    alignSelf: 'center',
+    marginTop: 10,
+    marginBottom: 4,
   },
-  sheetTitle: { fontSize: 15, fontWeight: '700', textAlign: 'center', paddingVertical: 12, color: '#1a1a1a' },
+  sheetTitle: { fontSize: 15, fontWeight: '700', textAlign: 'center', paddingVertical: 12, color: '#fff' },
   searchBar: {
     marginHorizontal: 16, marginBottom: 8,
-    backgroundColor: '#f0f0f0', borderRadius: 10, paddingHorizontal: 12,
+    backgroundColor: 'rgba(255,255,255,0.1)',
+    borderRadius: 10,
+    paddingHorizontal: 12,
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.16)',
   },
-  searchInput: { height: 40, fontSize: 15, color: '#1a1a1a' },
+  searchInput: { height: 40, fontSize: 15, color: '#fff' },
   searchRow: {
     flexDirection: 'row', alignItems: 'center',
     paddingVertical: 12, gap: 12,
-    borderBottomWidth: 1, borderBottomColor: '#f5f5f5',
+    borderBottomWidth: 1, borderBottomColor: 'rgba(255,255,255,0.08)',
   },
   searchAvatar: {
     width: 40, height: 40, borderRadius: 20,
-    backgroundColor: '#e0e0e0', alignItems: 'center', justifyContent: 'center',
+    backgroundColor: 'rgba(255,255,255,0.14)', alignItems: 'center', justifyContent: 'center',
   },
-  searchInitial: { fontSize: 16, fontWeight: '600', color: '#888' },
-  searchUsername: { fontSize: 14, fontWeight: '600', color: '#1a1a1a' },
-  searchEmpty: { textAlign: 'center', color: '#aaa', marginTop: 20 },
+  searchInitial: { fontSize: 16, fontWeight: '600', color: '#fff' },
+  searchUsername: { fontSize: 14, fontWeight: '600', color: 'rgba(255,255,255,0.94)' },
+  searchEmpty: { textAlign: 'center', color: 'rgba(255,255,255,0.62)', marginTop: 20 },
   modalContainer: { flex: 1, justifyContent: 'flex-end' },
-  resultsList: { maxHeight: 300, backgroundColor: '#fff', paddingHorizontal: 16 },
+  resultsList: { maxHeight: 300, backgroundColor: 'transparent', paddingHorizontal: 16 },
   groupNameInput: {
-    height: 44, backgroundColor: '#f0f0f0', borderRadius: 10,
-    paddingHorizontal: 12, fontSize: 15, color: '#1a1a1a', marginBottom: 12,
+    height: 44,
+    backgroundColor: 'rgba(255,255,255,0.1)',
+    borderRadius: 10,
+    paddingHorizontal: 12,
+    fontSize: 15,
+    color: '#fff',
+    marginBottom: 12,
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.16)',
   },
   chips: { flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginBottom: 12 },
-  chip: { backgroundColor: '#1a1a1a', borderRadius: 20, paddingHorizontal: 12, paddingVertical: 5 },
-  chipText: { color: '#fff', fontSize: 13 },
-  createBtn: {
-    margin: 16, height: 48, backgroundColor: '#1a1a1a',
-    borderRadius: 10, alignItems: 'center', justifyContent: 'center',
+  chip: {
+    backgroundColor: 'rgba(255,255,255,0.15)',
+    borderRadius: 20,
+    paddingHorizontal: 12,
+    paddingVertical: 5,
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.22)',
   },
-  createBtnDisabled: { backgroundColor: '#ccc' },
+  chipText: { color: 'rgba(255,255,255,0.92)', fontSize: 13 },
+  createBtn: {
+    margin: 16,
+    height: 48,
+    backgroundColor: 'rgba(255,255,255,0.2)',
+    borderRadius: 10, alignItems: 'center', justifyContent: 'center',
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.34)',
+  },
+  createBtnDisabled: { backgroundColor: 'rgba(255,255,255,0.1)', borderColor: 'rgba(255,255,255,0.16)' },
   createBtnText: { color: '#fff', fontSize: 15, fontWeight: '600' },
   tabHeader: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: '#fff',
-    borderBottomWidth: 1,
-    borderBottomColor: '#f0f0f0',
-    position: 'relative',
-  },
-  tabHeaderBtn: { flex: 1, alignItems: 'center', justifyContent: 'center', paddingVertical: 10 },
-  tabHeaderText: { fontSize: 14, fontWeight: '600', color: '#aaa' },
-  tabHeaderTextActive: { color: '#1a1a1a' },
-  groupsTabPill: {
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    borderRadius: 100,
-    backgroundColor: '#ebe6dc',
+    backgroundColor: 'rgba(255,255,255,0.09)',
     borderWidth: 1,
-    borderColor: '#ddd8ce',
-    maxWidth: '100%',
+    borderColor: 'rgba(255,255,255,0.16)',
+    borderRadius: 999,
+    marginHorizontal: 16,
+    marginBottom: 10,
+    position: 'relative',
+    overflow: 'hidden',
   },
-  groupsTabPillActive: {
-    backgroundColor: '#1a1a1a',
-    borderColor: '#1a1a1a',
+  tabHeaderBtn: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 11,
+    zIndex: 2,
   },
-  groupsTabPillText: {
-    fontSize: 14,
-    fontWeight: '700',
-    color: '#3a342b',
-    letterSpacing: -0.2,
-  },
-  groupsTabPillTextActive: {
-    color: '#fff',
-  },
-  tabIndicator: {
-    position: 'absolute', bottom: 0, height: 2,
-    width: '50%', backgroundColor: '#1a1a1a', borderRadius: 1,
+  tabHeaderText: { fontSize: 14, fontWeight: '700', color: 'rgba(255,255,255,0.58)' },
+  tabHeaderTextActive: { color: '#fff' },
+  tabSegmentActive: {
+    position: 'absolute',
+    top: 3,
+    bottom: 3,
+    width: SCREEN_WIDTH / 2 - 20,
+    borderRadius: 999,
+    backgroundColor: 'rgba(255,255,255,0.2)',
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.28)',
   },
   pager: { flex: 1 },
   page: { width: SCREEN_WIDTH, flex: 1 },

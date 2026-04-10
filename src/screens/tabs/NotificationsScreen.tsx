@@ -1,16 +1,9 @@
 import React, { useEffect, useState, useCallback } from 'react';
-import {
-  View,
-  Text,
-  FlatList,
-  Image,
-  TouchableOpacity,
-  StyleSheet,
-  ActivityIndicator,
-  RefreshControl,
-} from 'react-native';
+import { View, Text, FlatList, TouchableOpacity, StyleSheet, ActivityIndicator, RefreshControl } from 'react-native';
+import { Image } from 'expo-image';
 import { useNavigation } from '@react-navigation/native';
 import { supabase } from '../../lib/supabase';
+import { navigateToUserProfile } from '../../navigation/navigateToUserProfile';
 
 type Notification = {
   id: string;
@@ -131,6 +124,7 @@ export default function NotificationsScreen() {
       <FlatList
         data={notifications}
         keyExtractor={(item) => item.id}
+        showsVerticalScrollIndicator={false}
         refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} />}
         ListEmptyComponent={
           <View style={styles.empty}>
@@ -141,7 +135,7 @@ export default function NotificationsScreen() {
         renderItem={({ item }) => (
           <TouchableOpacity
             style={[styles.row, !item.read && styles.rowUnread]}
-            onPress={() => item.actor_id && navigation.navigate('UserProfile', { userId: item.actor_id })}
+            onPress={() => item.actor_id && navigateToUserProfile(navigation, item.actor_id)}
             activeOpacity={item.actor_id ? 0.7 : 1}
           >
             <View style={styles.avatarWrap}>
